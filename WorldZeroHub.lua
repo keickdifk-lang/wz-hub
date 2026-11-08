@@ -1,4 +1,4 @@
--- World // Zero hub bundle (LUMEN + hub)
+-- Divergence - World // Zero hub bundle
 -- boot guard: autoexec and queue_on_teleport can both start a copy right after a teleport;
 -- only the first one within 20 seconds runs.
 do
@@ -68,12 +68,12 @@ local DEFAULT = {
 	Shadow = Color3.fromRGB(4, 5, 7),
 	Text = Color3.fromRGB(240, 242, 246),       -- fore
 	Border = Color3.fromRGB(62, 66, 75),        -- rims
-	Inline = Color3.fromRGB(19, 21, 25),        -- panel
+	Inline = Color3.fromRGB(13, 13, 19),        -- panel
 	InactiveText = Color3.fromRGB(148, 153, 164), -- muted
-	Gradient = Color3.fromRGB(176, 198, 238),   -- bottom-light tint
-	Background = Color3.fromRGB(10, 11, 14),    -- void
-	Element = Color3.fromRGB(27, 30, 35),       -- graphite
-	Accent = Color3.fromRGB(214, 224, 240),     -- lumen (the horizon)
+	Gradient = Color3.fromRGB(70, 210, 255),    -- neon cyan, second colour of every glow
+	Background = Color3.fromRGB(6, 6, 10),      -- void
+	Element = Color3.fromRGB(22, 22, 31),       -- graphite
+	Accent = Color3.fromRGB(168, 120, 255),     -- neon violet, first colour of every glow
 }
 
 local function preset(accent, gradient)
@@ -102,14 +102,14 @@ local Lumen = {
 		Gradient = "Under-light", Background = "Void", Element = "Graphite", Accent = "Lumen",
 	},
 	Presets = {
-		Lumen = table.clone(DEFAULT),
+		Divergence = table.clone(DEFAULT),
 		Graphite = preset(Color3.fromRGB(232, 232, 234), Color3.fromRGB(200, 200, 206)),
 		Aurora = preset(Color3.fromRGB(150, 236, 214), Color3.fromRGB(120, 210, 190)),
 		Frost = preset(Color3.fromRGB(150, 205, 255), Color3.fromRGB(120, 170, 240)),
 		Iris = preset(Color3.fromRGB(196, 178, 255), Color3.fromRGB(160, 140, 240)),
 		Ember = preset(Color3.fromRGB(255, 196, 140), Color3.fromRGB(230, 160, 110)),
 	},
-	PresetOrder = { "Lumen", "Graphite", "Aurora", "Frost", "Iris", "Ember" },
+	PresetOrder = { "Divergence", "Graphite", "Aurora", "Frost", "Iris", "Ember" },
 	Font = pickFont("BuilderSans", "BuilderSans", Enum.FontWeight.Medium, "GothamSSm"),
 	BoldFont = pickFont("BuilderSans", "BuilderSans", Enum.FontWeight.Bold, "GothamSSm"),
 	Mono = pickFont("RobotoMono", "RobotoMono", Enum.FontWeight.Medium, "SourceSansPro"),
@@ -1764,8 +1764,8 @@ function Window:_openFx()
 	local th = Lumen.Theme
 	local rimS = self.RimStroke
 	if rimS then
-		rimS.Color, rimS.Thickness = th.Accent, 2
-		tw(rimS, 0.9, { Color = th.Border, Thickness = 1 }, Enum.EasingStyle.Quad)
+		rimS.Thickness = 4
+		tw(rimS, 0.9, { Thickness = 1.5 }, Enum.EasingStyle.Quad)
 	end
 	local sweep = self._sweep
 	if sweep then
@@ -1851,7 +1851,7 @@ end
 function Window:_watermarkText(fps)
 	local ping = 0
 	pcall(function() ping = math.floor(Stats.Network.ServerStatsItem["Data Ping"]:GetValue() + 0.5) end)
-	self.WatermarkLabel.Text = string.format("%s  ·  %d FPS  ·  %d MS", self.Brand, fps, ping)
+	self.WatermarkLabel.Text = string.format("%s  ·  %d FPS  ·  %d MS  ·  %s", self.Brand, fps, ping, os.date("%H:%M:%S"))
 end
 
 -- a status dot with a soft glow; returns the dot
@@ -1900,13 +1900,13 @@ local function buildExtras(W, gui)
 	surface(mb, "Inline", 0.1)
 	corner(mb, 10)
 	rim(mb)
-	text(mb, "L", 20, "Text", { FontFace = Lumen.BoldFont, TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 3 })
+	text(mb, "D", 20, "Text", { FontFace = Lumen.BoldFont, TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 3 })
 	horizon(mb, 0.6)
 	draggable(mb, mb, function() W:Toggle() end)
 	W.MenuButton = mb
 
 	local notes = new("Frame", { BackgroundTransparency = 1, AnchorPoint = V2(1, 1), Position = UD2(1, -18, 1, -28), Size = UD2(0, 300, 1, -48), ZIndex = 90, Parent = gui })
-	local nl = list(notes, 10)
+	local nl = list(notes, 6)
 	nl.VerticalAlignment = Enum.VerticalAlignment.Bottom
 	W.Notes = notes
 
@@ -1933,7 +1933,7 @@ function Lumen:CreateWindow(cfg)
 		Preset = 1,
 		MenuKey = normKey(cfg.Keybind or Enum.KeyCode.RightShift),
 		ConfigFolder = cfg.ConfigFolder or tostring(game.GameId),
-		Brand = brand or "LUMEN",
+		Brand = brand or "DIVERGENCE",
 		Menu = {
 			TweenTime = 0.42, FadeSpeed = 0.24, Style = EASE, Direction = Enum.EasingDirection.Out,
 			Darken = true, Effect = "None", Transparency = 0,
@@ -1976,25 +1976,54 @@ function Lumen:CreateWindow(cfg)
 	-- light that slowly travels around the window edge
 	do
 		local g = W.RimStroke:FindFirstChildOfClass("UIGradient")
-		if g then W:_loop(g, 9, { Rotation = 450 }, Enum.EasingStyle.Linear, false) end
+		if g then
+			W:_loop(g, 6, { Rotation = 450 }, Enum.EasingStyle.Linear, false)
+			-- neon rim: the stroke stays white so the gradient alone decides its colours
+			W.RimStroke.Thickness = 1.5
+			hook(function()
+				local th = Lumen.Theme
+				W.RimStroke.Color = Color3.new(1, 1, 1)
+				g.Color = ColorSequence.new({
+					ColorSequenceKeypoint.new(0, th.Accent), ColorSequenceKeypoint.new(0.5, th.Gradient), ColorSequenceKeypoint.new(1, th.Accent),
+				})
+				g.Transparency = NumberSequence.new(0)
+			end)
+		end
 	end
 	W.Scaler = new("UIScale", { Parent = root })
 	new("TextButton", { Modal = true, BackgroundTransparency = 1, Size = OFF(0, 0), Parent = root }) -- frees the mouse in first person
 
-	-- faint blueprint grid behind everything
-	-- (a CanvasGroup so one gradient can fade the whole grid toward the bottom)
-	local grid = new("CanvasGroup", { BackgroundTransparency = 1, Size = SCL(1, 1), ZIndex = 0, Parent = root })
-	local gridLines = {}
-	for x = 44, 2000, 44 do
-		table.insert(gridLines, new("Frame", { Position = OFF(x, 0), Size = UD2(0, 1, 1, 0), BackgroundTransparency = 0.965, Parent = grid }))
+	-- ambience: a drifting aurora along the top and slow rising motes. Engine tweens, and they stop
+	-- whenever the window is hidden, so this costs almost nothing.
+	do
+		local fx = new("Frame", { BackgroundTransparency = 1, Size = SCL(1, 1), ZIndex = 0, ClipsDescendants = true, Parent = root })
+		W.Fx = fx
+		-- covers the whole window and fades straight down to nothing, so it has no visible edge
+		local aurora = new("Frame", { BorderSizePixel = 0, Size = SCL(1, 1), BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 0.45, ZIndex = 0, Parent = fx })
+		local ag = new("UIGradient", {
+			Rotation = 90, Offset = V2(0, -0.08),
+			Transparency = NumberSequence.new({ KP(0, 0.45), KP(0.5, 0.92), KP(0.8, 1), KP(1, 1) }), Parent = aurora,
+		})
+		W:_loop(ag, 8, { Offset = V2(0, 0.08) })
+		W:_loop(aurora, 5, { BackgroundTransparency = 0.7 })
+		local rng, motes = Random.new(), {}
+		for i = 1, 26 do
+			local size = rng:NextInteger(2, 4)
+			local x, y = rng:NextNumber(0.02, 0.98), rng:NextNumber(0.4, 1.02)
+			local m = new("Frame", {
+				BorderSizePixel = 0, AnchorPoint = V2(0.5, 0.5), Position = SCL(x, y), Size = OFF(size, size),
+				BackgroundTransparency = rng:NextNumber(0.2, 0.55), ZIndex = 0, Parent = fx,
+			})
+			corner(m, 99)
+			motes[i] = m
+			W:_loop(m, rng:NextNumber(7, 16), { Position = SCL(x + rng:NextNumber(-0.05, 0.05), y - rng:NextNumber(0.35, 0.7)), BackgroundTransparency = 1 }, Enum.EasingStyle.Linear, false)
+		end
+		hook(function()
+			local th = Lumen.Theme
+			ag.Color = ColorSequence.new({ ColorSequenceKeypoint.new(0, th.Accent), ColorSequenceKeypoint.new(1, th.Gradient) })
+			for i, m in ipairs(motes) do m.BackgroundColor3 = (i % 2 == 0) and th.Accent or th.Gradient end
+		end)
 	end
-	for y = 44, 1400, 44 do
-		table.insert(gridLines, new("Frame", { Position = OFF(0, y), Size = UD2(1, 0, 0, 1), BackgroundTransparency = 0.965, Parent = grid }))
-	end
-	new("UIGradient", { Rotation = 90, Transparency = NumberSequence.new({ KP(0, 0), KP(0.55, 0.35), KP(1, 1) }), Parent = grid })
-	hook(function()
-		for _, l in ipairs(gridLines) do l.BackgroundColor3 = Lumen.Theme.Text end
-	end)
 
 	if cfg.Image then
 		local img = new("ImageLabel", {
@@ -2179,7 +2208,17 @@ function Lumen:CreateWindow(cfg)
 	if cam then
 		bind(cam:GetPropertyChangedSignal("ViewportSize"), function() W:_applyScale() end)
 	end
-	W:SetOpen(true)
+	W:SetWatermark(true)
+	-- Silent Load (Configs section): start hidden, with no opening animation; the menu key opens it
+	local silent = false
+	pcall(function() silent = isfile(self:_cfgPath() .. "/silent.txt") end)
+	if silent then
+		W.Open = false
+		root.Visible = false
+		W:_refreshBackdrop()
+	else
+		W:SetOpen(true)
+	end
 	return W
 end
 
@@ -2210,25 +2249,28 @@ function Lumen:Notify(a, duration)
 	local slot = new("Frame", { BackgroundTransparency = 1, Size = UD2(1, 0, 0, 0), AutomaticSize = AUTO_Y, Parent = W.Notes })
 	-- a plain Frame that slides in from off-screen (an auto-sized CanvasGroup rendered stale ghosts)
 	local card = new("Frame", { Position = UD2(1, 40, 0, 0), Size = UD2(1, 0, 0, 0), AutomaticSize = AUTO_Y, Parent = slot })
-	surface(card, "Inline")
-	corner(card, 12)
+	surface(card, "Inline", 0.05)
+	corner(card, 8)
 	rim(card)
-	local stack = new("Frame", { BackgroundTransparency = 1, Size = UD2(1, 0, 0, 0), AutomaticSize = AUTO_Y, Parent = card })
-	list(stack, 0).HorizontalAlignment = Enum.HorizontalAlignment.Center
-	local inner = new("Frame", { BackgroundTransparency = 1, Size = UD2(1, 0, 0, 0), AutomaticSize = AUTO_Y, LayoutOrder = 1, Parent = stack })
-	pad(inner, 16, 16, 12, 15)
-	list(inner, 4)
+	-- compact pill: "</> DIVERGENCE  Title" over the message, with a neon bar counting down underneath
+	local inner = new("Frame", { BackgroundTransparency = 1, Size = UD2(1, 0, 0, 0), AutomaticSize = AUTO_Y, Parent = card })
+	pad(inner, 11, 11, 7, 9)
+	list(inner, 2)
 	local headRow = new("Frame", { BackgroundTransparency = 1, Size = UD2(1, 0, 0, 14), LayoutOrder = 1, Parent = inner })
-	local hl = list(headRow, 8, Enum.FillDirection.Horizontal)
+	local hl = list(headRow, 7, Enum.FillDirection.Horizontal)
 	hl.VerticalAlignment = Enum.VerticalAlignment.Center
-	statusDot(headRow, { LayoutOrder = 1, Size = OFF(5, 5) })
-	mono(headRow, W.Brand .. "  ·  Notice", 10, "InactiveText", autoX({ LayoutOrder = 2 }))
-	text(inner, o.Title or W.Brand, 16, "Text", { Size = UD2(1, 0, 0, 20), LayoutOrder = 2, FontFace = Lumen.BoldFont })
-	text(inner, o.Text or "", 14, "InactiveText", {
-		Size = UD2(1, 0, 0, 0), AutomaticSize = AUTO_Y, TextWrapped = true, TextTruncate = Enum.TextTruncate.None, LayoutOrder = 3,
-	})
-	-- the horizon doubles as the countdown: it narrows to nothing from both ends
-	local line = horizon(stack, 0.7, { AnchorPoint = V2(0, 0), LayoutOrder = 2 })
+	mono(headRow, "</>", 11, "Accent", autoX({ LayoutOrder = 1 }))
+	mono(headRow, W.Brand, 10, "InactiveText", autoX({ LayoutOrder = 2 }))
+	text(headRow, o.Title or "Notice", 13, "Text", autoX({ LayoutOrder = 3, FontFace = Lumen.BoldFont }))
+	if o.Text and o.Text ~= "" then
+		text(inner, o.Text, 13, "InactiveText", {
+			Size = UD2(1, 0, 0, 0), AutomaticSize = AUTO_Y, TextWrapped = true, TextTruncate = Enum.TextTruncate.None, LayoutOrder = 2,
+		})
+	end
+	local line = new("Frame", { BorderSizePixel = 0, Position = UD2(0, 0, 1, -2), Size = UD2(1, 0, 0, 2), Parent = card })
+	corner(line, 2)
+	line.BackgroundColor3 = Color3.new(1, 1, 1)
+	new("UIGradient", { Color = ColorSequence.new(Lumen.Theme.Accent, Lumen.Theme.Gradient), Parent = line })
 
 	tw(card, 0.5, { Position = UD2(0, 0, 0, 0) })
 	tw(line, dur, { Size = UD2(0, 0, 0, 1) }, Enum.EasingStyle.Linear)
@@ -2311,7 +2353,8 @@ function Window:AddSettingsTab(name)
 	general:AddToggle("Lumen_AutoSave", { Text = "Auto Save Config", Callback = function(v) Lumen.AutoSave = v end })
 
 	local look = menu:AddSection("Appearance", "Right", { Open = true })
-	look:AddToggle("Lumen_Watermark", { Text = "Show Watermark", Callback = function(v) W:SetWatermark(v) end })
+	look:AddToggle("Lumen_Watermark", { Text = "Show Watermark", Default = true, Callback = function(v) W:SetWatermark(v) end })
+	look:AddToggle("Lumen_Fx", { Text = "Menu Particles & Aurora", Default = true, Callback = function(v) W.Fx.Visible = v end })
 	look:AddToggle("Lumen_KeybindList", { Text = "Show Keybind List", Callback = function(v) W.KeyList.Visible = v end })
 	look:AddToggle("Lumen_MenuButton", { Text = "Show Menu Button", Default = W.MenuButton.Visible, Callback = function(v) W.MenuButton.Visible = v end })
 	look:AddSlider("Lumen_BgTransparency", {
@@ -2342,7 +2385,7 @@ function Window:AddSettingsTab(name)
 
 	local manage = themes:AddSection("Manage", "Right", { Open = true })
 	manage:AddDropdown("Lumen_ThemePreset", {
-		Text = "Preset", Values = Lumen.PresetOrder, Default = "Lumen", NoSave = true,
+		Text = "Preset", Values = Lumen.PresetOrder, Default = "Divergence", NoSave = true,
 		Callback = function(v) if Lumen.Presets[v] then Lumen:SetTheme(Lumen.Presets[v]) end end,
 	})
 	local themeSelect = manage:AddDropdown("Lumen_ThemeSelect", { Text = "Saved Themes", Values = Lumen:ListThemes(), AllowNull = true, NoSave = true })
@@ -2426,6 +2469,21 @@ function Window:AddSettingsTab(name)
 		end,
 	})
 
+	local silentPath = function() return Lumen:_cfgPath() .. "/silent.txt" end
+	local silentOn = false
+	pcall(function() silentOn = isfile(silentPath()) end)
+	cfgSection:AddToggle("Lumen_SilentLoad", {
+		Text = "Silent Load", Default = silentOn, NoSave = true,
+		Callback = function(v)
+			if not hasFS() then return end
+			if v then
+				ensureFolder(Lumen:_cfgPath())
+				pcall(writefile, silentPath(), "1")
+			else
+				removeFile(silentPath())
+			end
+		end,
+	})
 	cfgSection:AddButton({ Text = "Set as Autoload", Callback = function()
 		if not hasFS() then return end
 		if not cfgSelect.Value then Lumen:Notify("Pick a config in Config Select first") return end
@@ -2656,6 +2714,7 @@ table.sort(dungeonLabelsAll, byGroup)
 
 local Window = Lumen:CreateWindow({
 	Title = "World // Zero",
+	Brand = "DIVERGENCE",
 	Footer = inDungeon and ("Dungeon · " .. tostring(currentWorld and currentWorld.Name or "?")) or "Lobby",
 	Keybind = Enum.KeyCode.RightShift,
 })
@@ -3545,26 +3604,41 @@ end
 
 -- mobs that must die before the boss: the King's curse guards, and the Queen's guards (she heals
 -- 1 % per second while any of them lives). Returns the mob, how close to circle it, and a status.
+curse.minions = { SpiritHorse = true, GhoulKnight = true, MazeMan = true, FallenKingMinion = true }
+
 function curse.priority(hrp)
 	if curse.marked() then
 		local m = curse.guard(hrp, "FallenKingMinion")
 		if m then return m, math.min(orbitRadius(m), 30), "curse: killing Fallen Guard" end
 	end
-	local skullBoss = curse.skullBoss()
-	if skullBoss then return skullBoss, 36, "skulls: staying close to the boss" end
+	if F.QueenMinions then
+		local m = curse.guard(hrp, "FallenQueenGuard")
+		if m then return m, math.min(orbitRadius(m), 30), "killing Queen's Guard" end
+	end
+	-- the King's and Queen's other minions come before the boss. Staying close for skulls is last in
+	-- this list on purpose: skulls are out for most of the fight and would starve everything below them
+	if F.KillMinions and inFallenThrone then
+		local mobs = workspace:FindFirstChild("Mobs")
+		local best, bestD
+		for _, m in ipairs(mobs and mobs:GetChildren() or {}) do
+			if curse.minions[m.Name] and alive(m) then
+				local d = (m.PrimaryPart.Position - hrp.Position).Magnitude
+				if not bestD or d < bestD then best, bestD = m, d end
+			end
+		end
+		if best then return best, math.min(orbitRadius(best), 30), "killing " .. best.Name end
+	end
 	-- spawns when the Queen drops to 50 %: pulses Darkness (no skills, only basic attacks) until destroyed
 	if F.KillClock then
 		local m = curse.guard(hrp, "FallenClock")
 		if m then return m, 18, "destroying Fallen Clock" end
 	end
-	if F.QueenMinions then
-		local m = curse.guard(hrp, "FallenQueenGuard")
-		if m then return m, math.min(orbitRadius(m), 30), "killing Queen's Guard" end
-	end
 	if F.KillPrince then
 		local m = curse.guard(hrp, "BOSSFallenPrince")
 		if m then return m, 36, "killing Fallen Prince" end
 	end
+	local skullBoss = curse.skullBoss()
+	if skullBoss then return skullBoss, 28, "skulls: staying close to the boss" end -- well inside their 40-stud limit
 	return nil
 end
 
@@ -3794,6 +3868,43 @@ do
 	onUnload(function() c:Disconnect() end)
 end
 
+-- Last-moment sidestep for a launched skull (100 studs/s, hits within 4 studs, turns worse the
+-- longer it flies): checked every frame, because the fight loop is far too slow for this.
+local skullEvade = { untilT = 0, goal = nil, count = 0 }
+bossDodge.skullEvade = skullEvade
+do
+	local lastSeen = setmetatable({}, { __mode = "k" })
+	local c = RunService.Heartbeat:Connect(function()
+		if not F.DodgeBoss or not next(skullsFlying) then return end
+		local hrp = root()
+		if not hrp then return end
+		local now = os.clock()
+		if now < skullEvade.untilT then return end
+		for m in pairs(skullsFlying) do
+			local part = m.Parent and m.PrimaryPart
+			if part then
+				local pos, prev = part.Position, lastSeen[m]
+				lastSeen[m] = { pos, now }
+				if prev and now > prev[2] then
+					local vel = (pos - prev[1]) / (now - prev[2])
+					local to = hrp.Position - pos
+					if vel.Magnitude > 70 and to.Magnitude < 35 and to.Magnitude > 0.1 and vel.Unit:Dot(to.Unit) > 0.7 then
+						local side = Vector3.new(-vel.Z, 0, vel.X)
+						side = side.Magnitude > 0.1 and side.Unit or Vector3.new(1, 0, 0)
+						local a, b = hrp.Position + side * 35, hrp.Position - side * 35
+						local goal = (not inZone(a, 6)) and a or ((not inZone(b, 6)) and b or a)
+						hoverTo(hrp, goal, nil, F.OrbitHeight or 0)
+						skullEvade.untilT, skullEvade.goal = now + 0.35, goal
+						skullEvade.count += 1
+						return
+					end
+				end
+			end
+		end
+	end)
+	onUnload(function() c:Disconnect() end)
+end
+
 local function triggerGoal(p)
 	-- aim at the floor inside the trigger, not its centre (big triggers float in the air)
 	local top = Vector3.new(p.Position.X, p.Position.Y + p.Size.Y * 0.5, p.Position.Z)
@@ -3811,11 +3922,13 @@ task.spawn(function()
 			local ok, err = pcall(function()
 				local hrp = root()
 				if not hrp then status.text = "waiting for character" return end
+				if os.clock() < skullEvade.untilT then return end -- mid-sidestep: let it finish
+				-- orbs come first, before dodging and every other target: the trip takes about a second
+				if (F.AutoFarm or running or towerRun) and orbStep(hrp) then return end
 				if (F.AutoFarm or running or towerRun) and curse.toWell(hrp) then return end
 				if dodgeStep(hrp) then return end
 				if not (F.AutoFarm or running or towerRun) then return end
 				if curse.kill(hrp) then return end
-				if orbStep(hrp) then return end
 				if towerRun and towerStep(hrp) then return end
 				-- sticky target: keep the current mob until it dies or something is much closer
 				if running then markPassiveTriggers(hrp) end
@@ -4557,6 +4670,7 @@ task.spawn(function()
 end)
 fallenSec:AddToggle("CureCurse", { Text = "Fallen King curse: kill guards, go to cure well", Default = true })
 fallenSec:AddToggle("QueenMinions", { Text = "Fallen Queen: kill her healing guards first", Default = true })
+fallenSec:AddToggle("KillMinions", { Text = "Kill the bosses' minions first", Default = true })
 fallenSec:AddToggle("KillPrince", { Text = "Fallen Queen: kill the Fallen Prince", Default = true })
 fallenSec:AddToggle("KillClock", { Text = "Fallen Queen: destroy the Fallen Clock", Default = true })
 fallenSec:AddToggle("AutoOrbs", { Text = "Auto collect power orbs", Default = true })
@@ -5245,32 +5359,178 @@ pcall(function() hudGui.Parent = (gethui and gethui()) or game:GetService("CoreG
 if not hudGui.Parent then hudGui.Parent = LP:WaitForChild("PlayerGui") end
 onUnload(function() hudGui:Destroy() end)
 
+-- session HUD in the LUMEN look: theme colours and fonts, label left, value right, hairline dividers
 local hud = Instance.new("Frame")
-hud.Size = UDim2.fromOffset(230, 0)
+hud.Size = UDim2.fromOffset(236, 0)
 hud.AutomaticSize = Enum.AutomaticSize.Y
-hud.Position = UDim2.new(1, -246, 0, 70)
-hud.BackgroundColor3 = Color3.fromRGB(16, 15, 20)
-hud.BackgroundTransparency = 0.12
+hud.AnchorPoint = Vector2.new(1, 0) -- grows to the left, so a bigger HUD stays on screen
+hud.Position = UDim2.new(1, -16, 0, 70)
+local hudScale = Instance.new("UIScale", hud)
+hudScale.Scale = 1.2
+hud.BackgroundTransparency = 0.06
 hud.BorderSizePixel = 0
 hud.Active = true
 hud.Parent = hudGui
-Instance.new("UICorner", hud).CornerRadius = UDim.new(0, 8)
-local stroke = Instance.new("UIStroke", hud)
-stroke.Color = Color3.fromRGB(60, 58, 72)
-local pad = Instance.new("UIPadding", hud)
-pad.PaddingTop, pad.PaddingBottom, pad.PaddingLeft, pad.PaddingRight = UDim.new(0, 10), UDim.new(0, 10), UDim.new(0, 12), UDim.new(0, 12)
-local hudText = Instance.new("TextLabel")
-hudText.BackgroundTransparency = 1
-hudText.Size = UDim2.new(1, 0, 0, 0)
-hudText.AutomaticSize = Enum.AutomaticSize.Y
-hudText.Font = Enum.Font.GothamMedium
-hudText.TextSize = 14
-hudText.RichText = true
-hudText.TextXAlignment = Enum.TextXAlignment.Left
-hudText.TextYAlignment = Enum.TextYAlignment.Top
-hudText.TextColor3 = Color3.fromRGB(235, 235, 240)
-hudText.Text = "Session: loading..."
-hudText.Parent = hud
+Instance.new("UICorner", hud).CornerRadius = UDim.new(0, 7)
+local hudStroke = Instance.new("UIStroke", hud)
+hudStroke.Thickness = 1
+hudStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+hudStroke.Thickness = 1.5
+hudStroke.Color = Color3.new(1, 1, 1) -- white, so the gradient alone decides the colours
+local hudGlow = Instance.new("UIGradient", hudStroke)
+do
+	local TS = game:GetService("TweenService")
+	local spin = TS:Create(hudGlow, TweenInfo.new(6, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1), { Rotation = 360 })
+	spin:Play()
+	onUnload(function() spin:Cancel() end)
+end
+
+-- floating pill at the top of the screen: what the hub is doing right now
+local statusPill = Instance.new("Frame")
+statusPill.AnchorPoint = Vector2.new(0.5, 0)
+statusPill.Position = UDim2.new(0.5, 0, 0, 10)
+statusPill.Size = UDim2.fromOffset(0, 26)
+statusPill.AutomaticSize = Enum.AutomaticSize.X
+statusPill.BackgroundTransparency = 0.06
+statusPill.BorderSizePixel = 0
+statusPill.Visible = false
+statusPill.Parent = hudGui
+Instance.new("UICorner", statusPill).CornerRadius = UDim.new(0, 7)
+local statusPillStroke = Instance.new("UIStroke", statusPill)
+local statusPillPad = Instance.new("UIPadding", statusPill)
+statusPillPad.PaddingLeft, statusPillPad.PaddingRight = UDim.new(0, 11), UDim.new(0, 13)
+local statusPillList = Instance.new("UIListLayout", statusPill)
+statusPillList.FillDirection = Enum.FillDirection.Horizontal
+statusPillList.VerticalAlignment = Enum.VerticalAlignment.Center
+statusPillList.Padding = UDim.new(0, 8)
+local statusDot = Instance.new("Frame")
+statusDot.Size = UDim2.fromOffset(6, 6)
+statusDot.BorderSizePixel = 0
+statusDot.Parent = statusPill
+Instance.new("UICorner", statusDot).CornerRadius = UDim.new(1, 0)
+local statusPillText = Instance.new("TextLabel")
+statusPillText.BackgroundTransparency = 1
+statusPillText.AutomaticSize = Enum.AutomaticSize.X
+statusPillText.Size = UDim2.fromOffset(0, 26)
+statusPillText.FontFace = Lumen.Mono or Lumen.Font
+statusPillText.TextSize = 12
+statusPillText.Parent = statusPill
+task.spawn(function()
+	while not Lumen.Unloaded do
+		local active = F.StatusPill ~= false and (F.AutoFarm or (F.AutoRun and inDungeon) or (F.AutoTower and inInfiniteTower) or (F.AutoFallen and inFallenThrone))
+		statusPill.Visible = active and true or false
+		if active then
+			local th = Lumen.Theme
+			statusPill.BackgroundColor3 = th.Background
+			statusPillStroke.Color = th.Outline
+			statusDot.BackgroundColor3 = th.Gradient
+			statusPillText.TextColor3 = th.Text
+			statusPillText.Text = tostring(status.text)
+		end
+		task.wait(0.25)
+	end
+end)
+local hudPad = Instance.new("UIPadding", hud)
+hudPad.PaddingLeft, hudPad.PaddingRight = UDim.new(0, 12), UDim.new(0, 12)
+hudPad.PaddingTop, hudPad.PaddingBottom = UDim.new(0, 9), UDim.new(0, 10)
+local hudList = Instance.new("UIListLayout", hud)
+hudList.SortOrder = Enum.SortOrder.LayoutOrder
+hudList.Padding = UDim.new(0, 2)
+
+local hudOrder, hudPaintList = 0, {}
+local function hudPlace(o)
+	hudOrder += 1
+	o.LayoutOrder = hudOrder
+	o.Parent = hud
+end
+local function hudLabel(parent, font, align, themeKey)
+	local t = Instance.new("TextLabel")
+	t.BackgroundTransparency = 1
+	t.Size = UDim2.fromScale(1, 1)
+	t.FontFace = font
+	t.TextSize = 13
+	t.TextXAlignment = align
+	t.TextTruncate = Enum.TextTruncate.AtEnd
+	t.Text = ""
+	t.Parent = parent
+	if themeKey then table.insert(hudPaintList, { t, themeKey, "TextColor3" }) end
+	return t
+end
+-- returns the value label; `height` defaults to one normal row
+local function hudRow(title, leftFont, leftKey, height)
+	local row = Instance.new("Frame")
+	row.BackgroundTransparency = 1
+	row.BorderSizePixel = 0
+	row.Size = UDim2.new(1, 0, 0, height or 17)
+	hudPlace(row)
+	local left = hudLabel(row, leftFont or Lumen.Font, Enum.TextXAlignment.Left, leftKey or "InactiveText")
+	left.Text = title
+	return hudLabel(row, Lumen.Mono or Lumen.Font, Enum.TextXAlignment.Right, "Text"), row, left
+end
+local function hudDivider()
+	local gap = Instance.new("Frame")
+	gap.BackgroundTransparency = 1
+	gap.BorderSizePixel = 0
+	gap.Size = UDim2.new(1, 0, 0, 7)
+	hudPlace(gap)
+	local line = Instance.new("Frame")
+	line.BorderSizePixel = 0
+	line.AnchorPoint = Vector2.new(0, 0.5)
+	line.Position = UDim2.fromScale(0, 0.5)
+	line.Size = UDim2.new(1, 0, 0, 1)
+	line.Parent = gap
+	table.insert(hudPaintList, { line, "Outline", "BackgroundColor3" })
+end
+
+local hudV = {}
+hudV.time = hudRow("DIVERGENCE", Lumen.BoldFont or Lumen.Font, "Text", 19)
+hudV.time.TextColor3 = Lumen.Theme.InactiveText
+hudDivider()
+hudV.gold = hudRow("Gold earned")
+hudV.hour = hudRow("Per hour")
+hudV.net = hudRow("Net")
+hudV.run = hudRow("This run")
+hudV.runs = hudRow("Runs")
+hudV.levels = hudRow("Levels")
+hudV.coins = hudRow("Halloween coins")
+hudDivider()
+hudV.lootCount = hudRow("Chest loot", Lumen.BoldFont or Lumen.Font, "Text")
+local hudLoot = {}
+for i = 1, 3 do
+	local row = Instance.new("Frame")
+	row.BackgroundTransparency = 1
+	row.BorderSizePixel = 0
+	row.Size = UDim2.new(1, 0, 0, 16)
+	row.Visible = false
+	hudPlace(row)
+	hudLoot[i] = { row = row, label = hudLabel(row, Lumen.Font, Enum.TextXAlignment.Left, nil) }
+end
+
+local hudLootButton = Instance.new("TextButton")
+hudLootButton.Size = UDim2.new(1, 0, 0, 22)
+hudLootButton.BorderSizePixel = 0
+hudLootButton.AutoButtonColor = true
+hudLootButton.FontFace = Lumen.Font
+hudLootButton.TextSize = 13
+hudLootButton.Text = "View all loot"
+hudPlace(hudLootButton)
+Instance.new("UICorner", hudLootButton).CornerRadius = UDim.new(0, 5)
+table.insert(hudPaintList, { hudLootButton, "Element", "BackgroundColor3" })
+table.insert(hudPaintList, { hudLootButton, "Text", "TextColor3" })
+
+local function hudPaint()
+	local th = Lumen.Theme
+	hudScale.Scale = (F.HudScale or 120) / 100
+	hud.BackgroundColor3 = th.Background
+	hudGlow.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, th.Accent), ColorSequenceKeypoint.new(0.5, th.Gradient), ColorSequenceKeypoint.new(1, th.Accent),
+	})
+	for _, p in ipairs(hudPaintList) do p[1][p[3]] = th[p[2]] end
+	hudV.time.TextColor3 = th.InactiveText
+	hudV.gold.TextColor3 = th.Accent
+	hudV.coins.TextColor3 = Color3.fromRGB(255, 170, 60)
+end
+hudPaint()
 
 -- drag
 do
@@ -5293,8 +5553,250 @@ do
 	onUnload(function() c1:Disconnect() c2:Disconnect() end)
 end
 
-local GOLD = '<font color="rgb(255,206,84)">'
-local DIM = '<font color="rgb(150,148,165)">'
+
+-- chest loot on the HUD: only the last 3 items, one short line each, so the HUD can't grow
+local RARITY_COLORS = { Color3.fromRGB(190, 190, 195), Color3.fromRGB(120, 220, 120), Color3.fromRGB(90, 160, 255), Color3.fromRGB(190, 110, 255), Color3.fromRGB(255, 170, 60) }
+local lastLootAt = {}
+local function addLoot(item)
+	if not session or typeof(item) ~= "Instance" then return end
+	local idValue = item:FindFirstChild("ID")
+	local id = idValue and idValue.Value or nil
+	local key = id or item.Name
+	local now = os.clock()
+	if now - (lastLootAt[key] or -1e9) < 1 then return end -- same item reported by two events
+	lastLootAt[key] = now
+	session.loot = session.loot or {}
+	table.insert(session.loot, 1, item.Name)
+	session.loot[4] = nil
+	session.lootAll = session.lootAll or {}
+	table.insert(session.lootAll, { n = item.Name, id = id })
+	if #session.lootAll > 300 then table.remove(session.lootAll, 1) end
+	session.lootCount = (session.lootCount or 0) + 1
+	saveSession()
+end
+do
+	local function watch(name, handler)
+		local r = remote(name)
+		if r then
+			local c = r.OnClientEvent:Connect(handler)
+			onUnload(function() c:Disconnect() end)
+		end
+	end
+	watch("Inventory_FullscreenItemAwarded", function(item)
+		if typeof(item) == "Instance" then addLoot(item) end
+	end)
+	watch("Missions_PlayerRewarded", function(player, item)
+		if player == LP and typeof(item) == "Instance" then addLoot(item) end
+	end)
+end
+-- full session loot list: 3D picture of every item, with SOLD / KEPT above it. An item counts as
+-- gone once its unique ID is in neither the inventory nor the equipped gear.
+local lootPanel = Instance.new("Frame")
+lootPanel.AnchorPoint = Vector2.new(0.5, 0.5)
+lootPanel.Position = UDim2.fromScale(0.5, 0.5)
+lootPanel.Size = UDim2.fromOffset(500, 400)
+lootPanel.BorderSizePixel = 0
+lootPanel.Visible = false
+lootPanel.Active = true
+lootPanel.ZIndex = 5
+lootPanel.Parent = hudGui
+Instance.new("UICorner", lootPanel).CornerRadius = UDim.new(0, 7)
+local lootStroke = Instance.new("UIStroke", lootPanel)
+local lootTitle = Instance.new("TextLabel")
+lootTitle.BackgroundTransparency = 1
+lootTitle.Position = UDim2.fromOffset(14, 8)
+lootTitle.Size = UDim2.new(1, -60, 0, 24)
+lootTitle.FontFace = Lumen.BoldFont or Lumen.Font
+lootTitle.TextSize = 15
+lootTitle.TextXAlignment = Enum.TextXAlignment.Left
+lootTitle.ZIndex = 6
+lootTitle.Parent = lootPanel
+local lootClose = Instance.new("TextButton")
+lootClose.AnchorPoint = Vector2.new(1, 0)
+lootClose.Position = UDim2.new(1, -10, 0, 8)
+lootClose.Size = UDim2.fromOffset(24, 24)
+lootClose.BackgroundTransparency = 1
+lootClose.FontFace = Lumen.BoldFont or Lumen.Font
+lootClose.TextSize = 15
+lootClose.Text = "X"
+lootClose.ZIndex = 6
+lootClose.Parent = lootPanel
+local lootScroll = Instance.new("ScrollingFrame")
+lootScroll.BackgroundTransparency = 1
+lootScroll.BorderSizePixel = 0
+lootScroll.Position = UDim2.fromOffset(12, 40)
+lootScroll.Size = UDim2.new(1, -24, 1, -52)
+lootScroll.CanvasSize = UDim2.new()
+lootScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+lootScroll.ScrollBarThickness = 4
+lootScroll.ZIndex = 6
+lootScroll.Parent = lootPanel
+local lootGrid = Instance.new("UIGridLayout", lootScroll)
+lootGrid.CellSize = UDim2.fromOffset(110, 138)
+lootGrid.CellPadding = UDim2.fromOffset(8, 8)
+lootGrid.SortOrder = Enum.SortOrder.LayoutOrder
+
+local lootCells = {}
+local function lootOwnedIds()
+	local owned = {}
+	local function collect(container)
+		for _, d in ipairs(container:GetDescendants()) do
+			if d.Name == "ID" and d:IsA("StringValue") then owned[d.Value] = true end
+		end
+	end
+	local prof = profile()
+	local inv = prof and prof:FindFirstChild("Inventory")
+	local items = inv and inv:FindFirstChild("Items")
+	if items then collect(items) end
+	local equips = RS:FindFirstChild("PlayerEquips")
+	local mine = equips and equips:FindFirstChild(LP.Name)
+	if mine then collect(mine) end
+	return owned, items ~= nil
+end
+
+local function lootMakeCell(entry)
+	local cell = Instance.new("Frame")
+	cell.BorderSizePixel = 0
+	cell.ZIndex = 7
+	Instance.new("UICorner", cell).CornerRadius = UDim.new(0, 6)
+	local function text(y, h, size, font)
+		local t = Instance.new("TextLabel")
+		t.BackgroundTransparency = 1
+		t.Position = UDim2.fromOffset(4, y)
+		t.Size = UDim2.new(1, -8, 0, h)
+		t.FontFace = font
+		t.TextSize = size
+		t.TextWrapped = true
+		t.ZIndex = 8
+		t.Parent = cell
+		return t
+	end
+	local status = text(4, 16, 12, Lumen.BoldFont or Lumen.Font)
+	local nameLabel = text(102, 32, 12, Lumen.Font)
+	local info = ItemDB[entry.n]
+	nameLabel.Text = tostring(type(info) == "table" and info.DisplayKey or (entry.n:gsub("(%l)(%u)", "%1 %2")))
+	nameLabel.TextColor3 = (type(info) == "table" and RARITY_COLORS[info.Rarity or 0]) or Lumen.Theme.Text
+	local ok, view = gamePcall(function() return InventoryMod:GetItemViewport(entry.n) end)
+	if ok and typeof(view) == "Instance" and view:IsA("ViewportFrame") then
+		view.AnchorPoint = Vector2.new(0.5, 0)
+		view.Position = UDim2.new(0.5, 0, 0, 22)
+		view.Size = UDim2.fromOffset(78, 78)
+		view.BackgroundTransparency = 1
+		view.Ambient = Color3.new(1, 1, 1)
+		view.ZIndex = 8
+		view.Parent = cell
+	end
+	cell.Parent = lootScroll
+	return { frame = cell, status = status }
+end
+
+local function lootRefreshPanel()
+	local th = Lumen.Theme
+	lootPanel.BackgroundColor3 = th.Background
+	lootStroke.Color = th.Outline
+	lootTitle.TextColor3 = th.Text
+	lootClose.TextColor3 = th.InactiveText
+	local all = session and session.lootAll or {}
+	local owned, known = lootOwnedIds()
+	local sold = 0
+	for i, entry in ipairs(all) do
+		local c = lootCells[entry]
+		if not c then
+			c = lootMakeCell(entry)
+			lootCells[entry] = c
+		end
+		c.frame.LayoutOrder = -i -- newest first
+		c.frame.BackgroundColor3 = th.Inline
+		if not known or not entry.id then
+			c.status.Text, c.status.TextColor3 = "UNKNOWN", th.InactiveText
+		elseif owned[entry.id] then
+			c.status.Text, c.status.TextColor3 = "KEPT", Color3.fromRGB(120, 220, 120)
+		else
+			c.status.Text, c.status.TextColor3 = "SOLD", Color3.fromRGB(255, 110, 110)
+			sold += 1
+		end
+	end
+	lootTitle.Text = string.format("Chest loot this session  ·  %d items  ·  %d sold", #all, sold)
+end
+
+hudLootButton.MouseButton1Click:Connect(function()
+	lootPanel.Visible = not lootPanel.Visible
+	if lootPanel.Visible then lootRefreshPanel() end
+end)
+lootClose.MouseButton1Click:Connect(function() lootPanel.Visible = false end)
+
+-- corner handle on the HUD: drag it out to make the HUD bigger, in to make it smaller
+do
+	local UIS = game:GetService("UserInputService")
+	local grip = Instance.new("TextButton")
+	grip.Text = ""
+	grip.AutoButtonColor = false
+	grip.Size = UDim2.fromOffset(14, 14)
+	grip.BorderSizePixel = 0
+	grip.BackgroundTransparency = 1
+	grip.ZIndex = 4
+	-- part of the HUD itself, so it moves and scales with it with no lag. The zero-height row lets
+	-- it sit in the corner without being stacked by the HUD's list layout.
+	local gripHolder = Instance.new("Frame")
+	gripHolder.BackgroundTransparency = 1
+	gripHolder.BorderSizePixel = 0
+	gripHolder.Size = UDim2.new(1, 0, 0, 0)
+	hudPlace(gripHolder)
+	grip.AnchorPoint = Vector2.new(1, 1)
+	grip.Position = UDim2.new(1, 8, 0, 6) -- 4 studs in from the card's corner, past the padding
+	grip.Parent = gripHolder
+	-- same as the LUMEN window's resize grip: two short diagonal hairlines in the corner
+	local gripLines = {}
+	for i, len in ipairs({ 10, 5 }) do
+		local line = Instance.new("Frame")
+		line.AnchorPoint = Vector2.new(0.5, 0.5)
+		line.Position = UDim2.new(1, -len / 2 - 1, 1, -len / 2 - 1)
+		line.Size = UDim2.fromOffset(len * 1.41, 1)
+		line.Rotation = -45
+		line.BorderSizePixel = 0
+		line.ZIndex = 5
+		line.Parent = grip
+		gripLines[i] = line
+	end
+	local dragStart, startScale
+	grip.InputBegan:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+			dragStart, startScale = i.Position, F.HudScale or 120
+		end
+	end)
+	local c1 = UIS.InputChanged:Connect(function(i)
+		if dragStart and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+			local d = i.Position - dragStart
+			local pct = math.clamp(math.floor(startScale + (d.X + d.Y) * 0.35), 80, 160)
+			pcall(function() Lumen.Options.HudScale:Set(pct) end)
+			hudScale.Scale = pct / 100
+		end
+	end)
+	local c2 = UIS.InputEnded:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then dragStart = nil end
+	end)
+	local c3 = RunService.Heartbeat:Connect(function()
+		for _, line in ipairs(gripLines) do line.BackgroundColor3 = Lumen.Theme.Border end
+	end)
+	onUnload(function() c1:Disconnect() c2:Disconnect() c3:Disconnect() end)
+end
+
+local function lootRows()
+	local loot = session.loot or {}
+if lootPanel.Visible then lootRefreshPanel() end
+	hudV.lootCount.Text = (session.lootCount or 0) > 0 and (session.lootCount .. " items") or "none yet"
+	for i = 1, 3 do
+		local row, name = hudLoot[i], loot[i]
+		row.row.Visible = name ~= nil
+		if name then
+			local info = ItemDB[name]
+			local display = type(info) == "table" and info.DisplayKey or nil
+			row.label.Text = tostring(display or (name:gsub("(%l)(%u)", "%1 %2")))
+			local rgb = type(info) == "table" and RARITY_COLORS[info.Rarity or 0] or nil
+			row.label.TextColor3 = rgb or Lumen.Theme.Text
+		end
+	end
+end
 task.spawn(function()
 	while not Lumen.Unloaded do
 		hud.Visible = F.ShowHUD ~= false
@@ -5306,15 +5808,22 @@ task.spawn(function()
 			local prof = profile()
 			local lvl = prof and prof:FindFirstChild("Level") and prof.Level.Value or 0
 			local avg = session.runs > 0 and session.earned / session.runs or 0
-			hudText.Text = table.concat({
-				"<b>World // Zero session</b>  " .. DIM .. fmtTime(t) .. "</font>",
-				"Gold earned  " .. GOLD .. fmtNum(session.earned) .. "</font>",
-				"Per hour  " .. GOLD .. fmtNum(perHour) .. "</font>",
-				"Net (after spending)  " .. fmtNum(net),
-				"Runs  " .. session.runs .. DIM .. "  · avg " .. fmtNum(avg) .. "</font>",
-				"This run  " .. fmtNum(session.earned - runStartEarned) .. DIM .. "  · last " .. fmtNum(session.lastRunGold) .. "</font>",
-				"Levels  +" .. math.max(0, lvl - (session.startLevel or lvl)) .. DIM .. "  (now " .. lvl .. ")</font>",
-			}, "\n")
+			local inv = prof and prof:FindFirstChild("Inventory")
+			local items = inv and inv:FindFirstChild("Items")
+			local coinItem = items and items:FindFirstChild("HalloweenCoin")
+			local coinCount = coinItem and coinItem:FindFirstChild("Count")
+			local coins = coinCount and coinCount.Value or 0
+			session.startCoins = session.startCoins or coins
+			hudPaint()
+			hudV.time.Text = fmtTime(t)
+			hudV.gold.Text = fmtNum(session.earned)
+			hudV.hour.Text = fmtNum(perHour)
+			hudV.net.Text = fmtNum(net)
+			hudV.run.Text = fmtNum(session.earned - runStartEarned)
+			hudV.runs.Text = session.runs .. "  avg " .. fmtNum(avg)
+			hudV.levels.Text = "+" .. math.max(0, lvl - (session.startLevel or lvl)) .. "  (" .. lvl .. ")"
+			hudV.coins.Text = "+" .. fmtNum(math.max(0, coins - session.startCoins))
+			lootRows()
 		end
 		task.wait(1)
 	end
@@ -5322,6 +5831,8 @@ end)
 
 local hudSec = TabDungeon:AddSection("Session HUD", { Open = true })
 hudSec:AddToggle("ShowHUD", { Text = "Show HUD", Default = true })
+hudSec:AddToggle("StatusPill", { Text = "Show status pill", Default = true })
+hudSec:AddSlider("HudScale", { Text = "HUD size", Min = 80, Max = 160, Default = 120, Decimals = 0, Suffix = " %" })
 hudSec:AddSlider("SessionGap", { Text = "New session after offline", Min = 5, Max = 240, Default = 30, Decimals = 0, Suffix = " min" })
 hudSec:AddButton("Reset session", function()
 	local gv = goldValue()
