@@ -2701,15 +2701,29 @@ local function nearestMob(maxDist)
 	return best, bestD
 end
 
+-- runs the game's own code at the privilege level of a normal game script. Some executors
+-- (Potassium) otherwise block the game's require() calls: the attack then errors right after marking
+-- the player busy, and no attack can ever start again.
+local function gamePcall(fn, ...)
+	local set, get = setthreadidentity, getthreadidentity
+	if not (set and get) then return pcall(fn, ...) end
+	local old = get()
+	set(2)
+	local result = table.pack(pcall(fn, ...))
+	set(old)
+	return table.unpack(result, 1, result.n)
+end
+
 local function useSkill(name)
 	if name == "Pet ability" then
 		-- same call as the game's PetSkill key; it can wait inside, so never block the fight loop
 		local pet = safeRequire(Shared:FindFirstChild("PetSkills"))
-		if pet and pet.UseSkill then task.spawn(pcall, pet.UseSkill, pet, LP) end
+		if pet and pet.UseSkill then task.spawn(gamePcall, pet.UseSkill, pet, LP) end
 		return
 	end
 	local A = getActions()
-	if A then pcall(A.UseSkill, A, name) end
+	-- in its own thread: a swing waits partway through, which must not happen inside the frame callback
+	if A then task.spawn(gamePcall, A.UseSkill, A, name) end
 end
 
 local function ensureDrawn()
@@ -3715,6 +3729,8 @@ end
 do
 	local SKILLS = { "Skill1", "Skill2", "Skill3", "Ultimate" }
 	local nextTry, petAt, drawnAt, holdSince = {}, 0, 0, nil
+	-- clear a swing left stuck by an earlier failed attack
+	do local A0 = getActions() if A0 then pcall(A0.ReleaseBusy, A0, "Swing") end end
 	local c = RunService.Heartbeat:Connect(function()
 		local fighting = F.AutoFarm or (F.AutoRun and inDungeon) or (F.AutoTower and inInfiniteTower) or (F.AutoFallen and inFallenThrone)
 		if not fighting or finished or not root() or not nearestMob(200) then holdSince = nil return end
@@ -4137,7 +4153,7 @@ local function applySkipSetting()
 	local S = safeRequire(Shared:FindFirstChild("Settings"))
 	if not S then return end
 	local ok, on = pcall(S.GetSkipCutscene, S, LP)
-	if not (ok and on) then pcall(S.SetSkipCutscenes, S, LP, true) end
+	if not (ok and on) then gamePcall(S.SetSkipCutscenes, S, LP, true) end
 end
 task.delay(4, applySkipSetting)
 
@@ -4541,7 +4557,7 @@ task.spawn(function()
 		onUnload(function() pcall(function() loot.AddItemToQueue = originalAdd end) end)
 	end
 	while not Lumen.Unloaded do
-		if F.AutoCloseLoot then pcall(loot._Close, loot) end
+		if F.AutoCloseLoot then gamePcall(loot._Close, loot) end
 		task.wait(0.25)
 	end
 end)
@@ -4690,7 +4706,7 @@ local function profile() return LP:FindFirstChild("PlayerGui") and LP.PlayerGui:
 local function call(m, fn, ...)
 	if not m or type(m[fn]) ~= "function" then return false end
 	local args = table.pack(...)
-	return pcall(function() return m[fn](m, table.unpack(args, 1, args.n)) end)
+	return gamePcall(function() return m[fn](m, table.unpack(args, 1, args.n)) end)
 end
 
 local function every(flag, seconds, fn)
