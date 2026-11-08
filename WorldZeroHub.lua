@@ -3425,6 +3425,9 @@ do
 		local orig = Eff.DoEffect
 		pcall(function()
 			Eff.DoEffect = function(self, name, ...)
+				-- Potassium can resume game code at executor level after a wait, and the game's effects
+				-- require() their scripts; that error killed skills halfway and left the player busy
+				if setthreadidentity and getthreadidentity and getthreadidentity() > 2 then setthreadidentity(2) end
 				if name == "RadialIndicator" or name == "ConeIndicator" then pcall(addZone, name, ...) end
 				if name == "FallenKingSpike" and F.DodgeBoss then
 					-- (cframe, seconds it stays, radius, ...): keeps damaging long after its warning circle is gone
@@ -3545,7 +3548,7 @@ end
 function curse.priority(hrp)
 	if curse.marked() then
 		local m = curse.guard(hrp, "FallenKingMinion")
-		if m then return m, 0, "curse: killing Fallen Guard" end
+		if m then return m, math.min(orbitRadius(m), 30), "curse: killing Fallen Guard" end
 	end
 	local skullBoss = curse.skullBoss()
 	if skullBoss then return skullBoss, 36, "skulls: staying close to the boss" end
@@ -3556,7 +3559,7 @@ function curse.priority(hrp)
 	end
 	if F.QueenMinions then
 		local m = curse.guard(hrp, "FallenQueenGuard")
-		if m then return m, 0, "killing Queen's Guard" end
+		if m then return m, math.min(orbitRadius(m), 30), "killing Queen's Guard" end
 	end
 	if F.KillPrince then
 		local m = curse.guard(hrp, "BOSSFallenPrince")
@@ -3569,7 +3572,7 @@ end
 function curse.toWell(hrp)
 	if not curse.wellPos or os.clock() >= curse.wellUntil or not curse.marked() then return false end
 	local p = curse.wellPos
-	hoverTo(hrp, Vector3.new(p.X, hrp.Position.Y, p.Z), nil, 0) -- the well only reaches 30 studs up
+	hoverTo(hrp, Vector3.new(p.X, hrp.Position.Y, p.Z), nil, 8) -- the well reaches about 15 studs up; minion swings about 5
 	status.text = string.format("going to cure well · %d studs", ((p - hrp.Position) * Vector3.new(1, 0, 1)).Magnitude)
 	return true
 end
@@ -3729,6 +3732,7 @@ end
 do
 	local SKILLS = { "Skill1", "Skill2", "Skill3", "Ultimate" }
 	local nextTry, petAt, drawnAt, holdSince = {}, 0, 0, nil
+	local watchedA, busyKey, busyAt = nil, nil, 0
 	-- clear a swing left stuck by an earlier failed attack
 	do local A0 = getActions() if A0 then pcall(A0.ReleaseBusy, A0, "Swing") end end
 	local c = RunService.Heartbeat:Connect(function()
@@ -3737,6 +3741,21 @@ do
 		local A = getActions()
 		if not A then return end
 		local now = os.clock()
+		-- safety net: remember what last marked us busy; if that never clears, release it
+		if A ~= watchedA and A.SetBusy then
+			watchedA = A
+			local origSet = A.SetBusy
+			A.SetBusy = function(self, key, ...)
+				busyKey, busyAt = key, os.clock()
+				return origSet(self, key, ...)
+			end
+			onUnload(function() A.SetBusy = origSet end)
+		end
+		if busyKey and now - busyAt > 6 then
+			local okB, isBusy = pcall(A.IsBusy, A)
+			if okB and isBusy then pcall(A.ReleaseBusy, A, busyKey) end
+			busyKey = nil
+		end
 		if now - drawnAt > 0.5 then drawnAt = now ensureDrawn() end
 		local skills = F.Skills or {}
 		if skills["Pet ability"] and now - petAt > 1 and nearestMob(60) then
@@ -3891,6 +3910,14 @@ task.spawn(function()
 				local range = F.AttackRange or 25
 				local mode = F.SafeMode or "Orbit"
 				-- far away: path there first (around walls); give up on mobs we can't get closer to
+				if dist > 60 and mode ~= "Off" and inFallenThrone then
+					-- open arena: fly straight back at float height. Walking there meant landing among the
+					-- minions, whose swings only reach about 5 studs up
+					local mp = mob.PrimaryPart.Position
+					hoverTo(hrp, Vector3.new(mp.X, hrp.Position.Y, mp.Z), mp, F.OrbitHeight or 0)
+					status.text = string.format("flying to %s · %d studs", mob.Name, dist)
+					return
+				end
 				if dist > 60 and mode ~= "Off" then
 					navTo(mob.PrimaryPart.Position, mob.PrimaryPart.Position)
 					if noProgress(mob, dist) then
