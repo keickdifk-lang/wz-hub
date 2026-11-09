@@ -529,6 +529,11 @@ function Lumen:SaveConfig(name)
 	for flag, opt in pairs(self.Options) do
 		if not opt.NoSave and opt.Serialize then data[flag] = opt:Serialize() end
 	end
+	local wm = self.Window and self.Window.Watermark
+	if wm then
+		local p = wm.Position
+		data.__WatermarkPos = { p.X.Scale, p.X.Offset, p.Y.Scale, p.Y.Offset }
+	end
 	return writeJSON(self:_cfgPath() .. "/" .. name .. ".json", data)
 end
 
@@ -539,6 +544,10 @@ function Lumen:LoadConfig(name)
 	for flag, value in pairs(data) do
 		local opt = self.Options[flag]
 		if opt and not opt.NoSave and opt.Deserialize then pcall(opt.Deserialize, opt, value) end
+	end
+	local pos, wm = data.__WatermarkPos, self.Window and self.Window.Watermark
+	if wm and type(pos) == "table" and #pos == 4 then
+		wm.Position = UDim2.new(pos[1], pos[2], pos[3], pos[4])
 	end
 	self._loading = false
 	self.CurrentConfig = name
@@ -2515,6 +2524,7 @@ function Window:AddSettingsTab(name)
 		end
 	end)
 
+	tab.Configs = configs
 	return tab
 end
 
@@ -3459,8 +3469,38 @@ bossDodge.zones = dodgeZones
 bossDodge.hover = hover
 
 do
+	-- how hard the attack being performed right now hits (share of health, from the mob data).
+	-- A mob's animation tracks are named after its attacks. nil = no known attack is playing.
+	local function currentAttackRatio()
+		local mobs = workspace:FindFirstChild("Mobs")
+		local best
+		for _, m in ipairs(mobs and mobs:GetChildren() or {}) do
+			local def = MobDefs and safeRequire(MobDefs:FindFirstChild(m.Name))
+			local animator = type(def) == "table" and type(def.Attacks) == "table" and m:FindFirstChildWhichIsA("Animator", true)
+			if animator then
+				for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+					local atk = def.Attacks[track.Name]
+					local ratio = type(atk) == "table" and atk.HealthDamageRatio
+					if type(ratio) == "number" and (not best or ratio > best) then best = ratio end
+				end
+			end
+		end
+		return best
+	end
+
 	local function addZone(name, a, b, c, d, e, playerOwned)
 		if not F.DodgeBoss or playerOwned then return end
+		local mode = F.DodgeMode or "Damaging attacks"
+		if mode ~= "All circles" then
+			local ratio = currentAttackRatio()
+			if mode == "Lethal attacks only" then
+				-- one-shot range; a huge circle with no known attack behind it is treated as lethal too
+				local hugeUnknown = ratio == nil and name == "RadialIndicator" and type(b) == "number" and b >= 60
+				if not ((ratio and ratio >= 0.5) or hugeUnknown) then return end
+			elseif ratio == 0 then
+				return -- the attack deals no damage (summons and similar)
+			end
+		end
 		if name == "RadialIndicator" then
 			-- (position, radius, projectile, duration, colour, playerOwned)
 			-- radius 150 = the Fallen Clock's pulse: harmless (it only locks skills for 2 s) and impossible
@@ -3539,7 +3579,9 @@ end
 
 local function dodgeUsable(hrp, p)
 	local gy = groundY(p, nil, 10)
-	return gy and math.abs(gy - hrp.Position.Y) < 40 and not workspace:Raycast(hrp.Position, p - hrp.Position, rayParams)
+	if not gy or math.abs(gy - hrp.Position.Y) >= 40 then return false end
+	if hover.floor and gy < hover.floor - 12 then return false end -- ground far below ours: outside the arena
+	return not workspace:Raycast(hrp.Position, p - hrp.Position, rayParams)
 end
 
 local function dodgeMove(hrp, goal, look)
@@ -3555,6 +3597,60 @@ local function hoverTo(hrp, goal, look, lift)
 	if route.pts then routeStop() end
 	if tweenObj then tweenObj:Cancel() tweenObj = nil end
 	hover.goal, hover.look, hover.speed, hover.ground, hover.lift = goal, look, moveSpeed(), true, lift
+end
+
+-- Next point on the circle around a mob, kept inside the map. A point is only used if the line from
+-- the mob to it hits no wall, the floor continues all the way there, and we can fly to it without
+-- crossing a wall. At the edge of the map the orbit turns around and circles back the other way.
+bossDodge.orbitDir = 1
+function bossDodge.orbitSpot(hrp, mp, ang, lead, radius)
+	local here = hrp.Position
+	local function pointAt(a, dist)
+		return Vector3.new(mp.X + math.cos(a) * dist, here.Y, mp.Z + math.sin(a) * dist)
+	end
+	local floorY = groundY(mp, nil, 3)
+	if not floorY then return pointAt(ang + bossDodge.orbitDir * lead, radius) end -- flying mob with no floor to compare to
+	local function reach(a)
+		local dir = Vector3.new(math.cos(a), 0, math.sin(a))
+		local wall = workspace:Raycast(mp, dir * (radius + 3), rayParams)
+		local limit = wall and math.max(wall.Distance - 3, 0) or radius
+		local s, good = 0, 0
+		repeat
+			s = math.min(s + 6, limit)
+			local gy = groundY(mp + dir * s, nil, 3)
+			if not gy or math.abs(gy - floorY) > 12 then return good end
+			good = s
+		until s >= limit
+		return good
+	end
+	local function usable(a)
+		if reach(a) < radius - 0.5 then return false end
+		return not workspace:Raycast(here, pointAt(a, radius) - here, rayParams)
+	end
+	local dir = bossDodge.orbitDir
+	if usable(ang + dir * lead) then return pointAt(ang + dir * lead, radius) end
+	if usable(ang - dir * lead) then
+		bossDodge.orbitDir = -dir
+		return pointAt(ang - dir * lead, radius)
+	end
+	-- both neighbours blocked: the nearest open part of the circle
+	for i = 2, 8 do
+		for _, sign in ipairs({ dir, -dir }) do
+			local a = ang + sign * i * math.pi / 8
+			if usable(a) then
+				bossDodge.orbitDir = sign
+				return pointAt(a, radius)
+			end
+		end
+	end
+	-- no full-distance spot anywhere (mob in a corner): as far out as the map allows
+	local bestA, bestR = ang, -1
+	for i = 0, 15 do
+		local a = i / 16 * math.pi * 2
+		local r = reach(a)
+		if r > bestR then bestA, bestR = a, r end
+	end
+	return pointAt(bestA, math.max(bestR, 0))
 end
 
 function curse.marked()
@@ -3656,13 +3752,23 @@ function curse.kill(hrp)
 	local m, radius, label = curse.priority(hrp)
 	if not m then return false end
 	local mp = m.PrimaryPart.Position
-	if radius == 0 then
+	if F.SafeMode == "Off" then
+		-- no circling: still goes for the priority target, but walks into range and stands there
+		if hover.goal then stopMoving() end
+		local away = (hrp.Position - mp) * Vector3.new(1, 0, 1)
+		local range = F.AttackRange or 25
+		if away.Magnitude > range then
+			moveTowards(mp + (away.Magnitude > 0.1 and away.Unit or Vector3.new(1, 0, 0)) * (range * 0.6))
+		else
+			stopMoving()
+		end
+	elseif radius == 0 then
 		-- float right above it: higher than a guard's swing reaches, and the closest target for auto-aim
 		hoverTo(hrp, Vector3.new(mp.X, hrp.Position.Y, mp.Z), nil, math.max(F.OrbitHeight or 0, 18))
 	else
 		local off = (hrp.Position - mp) * Vector3.new(1, 0, 1)
-		local a = (off.Magnitude > 0.1 and math.atan2(off.Z, off.X) or 0) + math.min(moveSpeed() / radius * 0.6, 0.5)
-		hoverTo(hrp, Vector3.new(mp.X + math.cos(a) * radius, hrp.Position.Y, mp.Z + math.sin(a) * radius), mp, F.OrbitHeight or 0)
+		local a = off.Magnitude > 0.1 and math.atan2(off.Z, off.X) or 0
+		hoverTo(hrp, bossDodge.orbitSpot(hrp, mp, a, math.min(moveSpeed() / radius * 0.6, 0.5), radius), mp, F.OrbitHeight or 0)
 	end
 	status.text = label
 	return true
@@ -3723,6 +3829,15 @@ local function dodgeStep(hrp)
 		return false
 	end
 	local farming = F.AutoFarm or F.AutoRun or F.AutoTower or (F.AutoFallen and inFallenThrone)
+	-- "Only dodge below": with more health than this, ignore the circles and keep fighting
+	if hpRatio() * 100 > (F.DodgeBelow or 100) then
+		bossDodge.boss = nil
+		if bossDodge.moving then
+			bossDodge.moving = false
+			if not farming then stopMoving() end
+		end
+		return false
+	end
 	local here = hrp.Position
 	-- zones can last 20 s (spikes), so priority targets still get their own distance during them
 	local mob, prioRadius = curse.priority(hrp)
@@ -3756,6 +3871,11 @@ local function dodgeStep(hrp)
 		return true
 	end
 	if not farming then
+		if bossDodge.moving then bossDodge.moving = false stopMoving() end
+		return false
+	end
+	-- Safety mode Off: nothing to steer around outside a zone, the normal fight logic stands still
+	if F.SafeMode == "Off" then
 		if bossDodge.moving then bossDodge.moving = false stopMoving() end
 		return false
 	end
@@ -3875,7 +3995,7 @@ bossDodge.skullEvade = skullEvade
 do
 	local lastSeen = setmetatable({}, { __mode = "k" })
 	local c = RunService.Heartbeat:Connect(function()
-		if not F.DodgeBoss or not next(skullsFlying) then return end
+		if not F.DodgeBoss or not next(skullsFlying) or hpRatio() * 100 > (F.DodgeBelow or 100) then return end
 		local hrp = root()
 		if not hrp then return end
 		local now = os.clock()
@@ -4045,6 +4165,8 @@ task.spawn(function()
 				end
 				-- close enough to fight: Orbit takes over from the travel tween
 				if route.pts then routeStop() end
+				-- a leftover flight goal (orb, dodge, skull sidestep) would keep overriding walking
+				if mode == "Off" and hover.goal then stopMoving() end
 				if mode == "Orbit" or mode == "Hover" then -- "Hover" = old saved configs
 					-- circle the target outside its attack reach, faster than it walks.
 					-- Orbit height 0 = follow the ground; above 0 = fly the circle that high above the mob.
@@ -4060,8 +4182,7 @@ task.spawn(function()
 					local ang = off.Magnitude > 0.1 and math.atan2(off.Z, off.X) or math.random() * math.pi * 2
 					-- lead point ahead on the circle; capped, because at high speed it ended up across the
 					-- circle and the straight line to it went through the middle of the mob
-					ang += math.min(moveSpeed() / radius * 0.6, 0.5)
-					local p = mp + Vector3.new(math.cos(ang) * radius, 0, math.sin(ang) * radius)
+					local p = bossDodge.orbitSpot(hrp, mp, ang, math.min(moveSpeed() / radius * 0.6, 0.5), radius)
 					hover.goal, hover.look, hover.speed, hover.ground, hover.lift = p, mp, moveSpeed(), true, h
 					if tweenObj then tweenObj:Cancel() tweenObj = nil end
 					lastPos, stuckSince = nil, nil
@@ -4326,6 +4447,7 @@ do
 					notify("Dungeon done", "Opened " .. n .. " chest(s)")
 				end
 				if F.AutoFallen and F.FallenRestart and inFallenThrone then
+					pcall(writefile, "wz_fallen_loop.txt", tostring(os.time()))
 					task.wait(F.FallenRestartDelay or 4)
 					notify("Fallen Throne", "Starting the next run")
 					restartDungeon()
@@ -4597,6 +4719,8 @@ safeSec:AddSlider("OrbitMargin", { Text = "Orbit: extra distance", Min = 2, Max 
 safeSec:AddSlider("OrbitHeight", { Text = "Orbit: height (0 = on the ground)", Min = 0, Max = 40, Default = 12, Decimals = 0, Suffix = " studs" })
 safeSec:AddSlider("PanicHP", { Text = "Back off below", Min = 0, Max = 90, Default = 35, Decimals = 0, Suffix = " % HP" })
 safeSec:AddToggle("DodgeBoss", { Text = "Dodge attack circles", Default = true })
+safeSec:AddDropdown("DodgeMode", { Text = "Dodge which attacks", Values = { "All circles", "Damaging attacks", "Lethal attacks only" }, Default = "Damaging attacks" })
+safeSec:AddSlider("DodgeBelow", { Text = "Only dodge below", Min = 5, Max = 100, Default = 100, Decimals = 0, Suffix = " % HP" })
 safeSec:AddLabel("Orbit circles the target outside its attack reach (read from the game's mob data). Ranged mobs, boss AOEs and crowds can still hit.")
 
 local questSec = TabLobby:AddSection("Quests", { Open = true })
@@ -4649,16 +4773,37 @@ fallenSec:AddSlider("FallenRestartDelay", { Text = "Next run delay", Min = 1, Ma
 fallenSec:AddToggle("FallenChests", { Text = "Auto open chests", Default = true })
 fallenSec:AddSlider("FallenChestCount", { Text = "Chests per run", Min = 1, Max = 4, Default = 2, Decimals = 0 })
 fallenSec:AddDropdown("FallenDifficulty", { Text = "Difficulty", Values = difficultyLabels(fallenThrone), Default = "Insane (6)" })
-fallenSec:AddButton("Start Fallen Throne", function()
+local function startFallen()
+	if not fallenThrone then notify("Fallen Throne", "Could not find this event") return end
+	local diff = tonumber(tostring(F.FallenDifficulty):match("%((%d+)%)")) or 1
+	fire("Teleport_PrewarmMission", fallenThrone.ID)
+	task.wait(1)
+	fire("Teleport_StartRaid", fallenThrone.ID, diff, nil)
+	notify("Fallen Throne", "Starting · " .. (DIFF_NAMES[diff] or tostring(diff)))
+end
+fallenSec:AddButton("Start Fallen Throne", function() task.spawn(startFallen) end)
+
+-- safety net for "Start the next run": the restart from the results screen sometimes sends the party
+-- to the lobby instead. A run that just ended leaves a timestamp; landing outside a dungeon soon
+-- after it starts the next run from here.
+do
+	local MARKER = "wz_fallen_loop.txt"
 	task.spawn(function()
-		if not fallenThrone then notify("Fallen Throne", "Could not find this event") return end
-		local diff = tonumber(tostring(F.FallenDifficulty):match("%((%d+)%)")) or 1
-		fire("Teleport_PrewarmMission", fallenThrone.ID)
-		task.wait(1)
-		fire("Teleport_StartRaid", fallenThrone.ID, diff, nil)
-		notify("Fallen Throne", "Starting · " .. (DIFF_NAMES[diff] or tostring(diff)))
+		task.wait(5) -- let the config autoload apply
+		if not (isfile and readfile and isfile(MARKER)) then return end
+		local stamp = tonumber(readfile(MARKER))
+		if inFallenThrone then pcall(delfile, MARKER) return end -- the normal restart worked
+		if not inLobby or not stamp or os.time() - stamp > 180 then return end
+		if not (F.AutoFallen and F.FallenRestart) then return end
+		pcall(delfile, MARKER)
+		notify("Fallen Throne", "Back in the lobby, starting the next run")
+		for _ = 1, 3 do
+			startFallen()
+			task.wait(20) -- still here means the start didn't go through; try again
+			if Lumen.Unloaded then return end
+		end
 	end)
-end)
+end
 local fallenLabel = fallenSec:AddLabel("Status: -")
 task.spawn(function()
 	while not Lumen.Unloaded do
@@ -4717,7 +4862,7 @@ dunSec:AddButton("Open chests now", function() notify("Chests", "Opened " .. ope
 dunSec:AddButton("Next dungeon now", function() task.spawn(nextDungeon) end)
 dunSec:AddButton("Return to lobby", leaveDungeon)
 
-local startSec = TabDungeon:AddSection("Start (lobby)", { Open = true })
+local startSec = TabLobby:AddSection("Start (lobby)", { Open = true })
 local diffDrop
 -- show only the difficulties the picked dungeon really has; keep the current one if it exists there
 local function refreshDifficulties()
@@ -5599,7 +5744,17 @@ lootPanel.BorderSizePixel = 0
 lootPanel.Visible = false
 lootPanel.Active = true
 lootPanel.ZIndex = 5
-lootPanel.Parent = hudGui
+-- its own layer in PlayerGui, above the black screen and the menu. Item pictures are loaded by the
+-- game's own code, which isn't allowed to place models inside hudGui when that sits in CoreGui.
+local lootGui = Instance.new("ScreenGui")
+lootGui.Name = "WZ_LootWindow"
+lootGui.ResetOnSpawn = false
+lootGui.IgnoreGuiInset = true
+lootGui.DisplayOrder = 10000
+lootGui:SetAttribute("WZHub", true)
+lootGui.Parent = LP:WaitForChild("PlayerGui")
+onUnload(function() lootGui:Destroy() end)
+lootPanel.Parent = lootGui
 Instance.new("UICorner", lootPanel).CornerRadius = UDim.new(0, 7)
 local lootStroke = Instance.new("UIStroke", lootPanel)
 local lootTitle = Instance.new("TextLabel")
@@ -5636,12 +5791,37 @@ lootGrid.CellSize = UDim2.fromOffset(110, 138)
 lootGrid.CellPadding = UDim2.fromOffset(8, 8)
 lootGrid.SortOrder = Enum.SortOrder.LayoutOrder
 
+-- drag the window by its title area or edges (the item grid keeps scrolling normally)
+do
+	local UIS = game:GetService("UserInputService")
+	local dragging, startPos, startInput
+	lootPanel.InputBegan:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+			dragging, startPos, startInput = true, lootPanel.Position, i.Position
+		end
+	end)
+	local c1 = UIS.InputChanged:Connect(function(i)
+		if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+			local d = i.Position - startInput
+			lootPanel.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+		end
+	end)
+	local c2 = UIS.InputEnded:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then dragging = false end
+	end)
+	onUnload(function() c1:Disconnect() c2:Disconnect() end)
+end
+
 local lootCells = {}
 local function lootOwnedIds()
-	local owned = {}
+	local owned, ownedNames = {}, {}
 	local function collect(container)
 		for _, d in ipairs(container:GetDescendants()) do
-			if d.Name == "ID" and d:IsA("StringValue") then owned[d.Value] = true end
+			if d.Name == "ID" and d:IsA("StringValue") then
+				owned[d.Value] = true
+				local itemName = d.Parent.Name
+				ownedNames[itemName] = (ownedNames[itemName] or 0) + 1
+			end
 		end
 	end
 	local prof = profile()
@@ -5651,7 +5831,7 @@ local function lootOwnedIds()
 	local equips = RS:FindFirstChild("PlayerEquips")
 	local mine = equips and equips:FindFirstChild(LP.Name)
 	if mine then collect(mine) end
-	return owned, items ~= nil
+	return owned, items ~= nil, ownedNames
 end
 
 local function lootMakeCell(entry)
@@ -5697,9 +5877,11 @@ local function lootRefreshPanel()
 	lootTitle.TextColor3 = th.Text
 	lootClose.TextColor3 = th.InactiveText
 	local all = session and session.lootAll or {}
-	local owned, known = lootOwnedIds()
+	local owned, known, ownedNames = lootOwnedIds()
 	local sold = 0
-	for i, entry in ipairs(all) do
+	-- newest first, so when several copies of an item exist the newest ones count as kept
+	for i = #all, 1, -1 do
+		local entry = all[i]
 		local c = lootCells[entry]
 		if not c then
 			c = lootMakeCell(entry)
@@ -5707,9 +5889,21 @@ local function lootRefreshPanel()
 		end
 		c.frame.LayoutOrder = -i -- newest first
 		c.frame.BackgroundColor3 = th.Inline
-		if not known or not entry.id then
+		-- end-of-run chest rewards arrive as a copy with no ID, so those are matched by item name
+		-- only gear can be sold; skins and the like unlock to the account and never sit in the inventory
+		local info = ItemDB[entry.n]
+		local have = not (type(info) == "table" and SELL_TYPES[info.Type])
+		if have then
+			-- nothing to check
+		elseif entry.id then
+			have = owned[entry.id] == true
+		elseif (ownedNames[entry.n] or 0) > 0 then
+			ownedNames[entry.n] -= 1
+			have = true
+		end
+		if not known then
 			c.status.Text, c.status.TextColor3 = "UNKNOWN", th.InactiveText
-		elseif owned[entry.id] then
+		elseif have then
 			c.status.Text, c.status.TextColor3 = "KEPT", Color3.fromRGB(120, 220, 120)
 		else
 			c.status.Text, c.status.TextColor3 = "SOLD", Color3.fromRGB(255, 110, 110)
@@ -5799,8 +5993,8 @@ if lootPanel.Visible then lootRefreshPanel() end
 end
 task.spawn(function()
 	while not Lumen.Unloaded do
-		hud.Visible = F.ShowHUD ~= false
-		if session and hud.Visible then
+		hud.Visible = F.ShowHUD ~= false and not F.Disable3D -- the black screen shows the same stats
+		if session and (hud.Visible or F.Disable3D) then
 			local t = os.time() - session.start
 			local perHour = t > 60 and session.earned / (t / 3600) or 0
 			local gv = goldValue()
@@ -5840,10 +6034,7 @@ hudSec:AddButton("Reset session", function()
 end)
 hudSec:AddLabel("Counts every gold gain across all runs and teleports. The HUD can be dragged.")
 
--- auto execute: re-run the hub after every teleport (dungeon start / leave)
-local autoSec = TabDungeon:AddSection("Auto Execute", { Open = true })
-autoSec:AddToggle("AutoReexec", { Text = "Reload hub after teleports", Default = true })
-autoSec:AddLabel("Needs WorldZeroHub.lua or internet access: after a teleport the hub reloads the latest version online.")
+-- auto execute: re-run the hub after every teleport (dungeon start / leave). Its toggle is in Settings > Configs.
 do
 	local genv = getgenv and getgenv() or _G
 	local function queue()
@@ -5875,7 +6066,305 @@ do
 	onUnload(function() c:Disconnect() end)
 end
 
-Window:AddSettingsTab()
+-- Stay put: a copy of the character that exists only on this screen. WASD and the camera follow the
+-- copy while the real character keeps farming, hidden from this player's view. Other players and
+-- the server still see the real character.
+do
+	local UIS = game:GetService("UserInputService")
+	local active, clone, cloneHum, cloneRoot, conn, controls, anims, playing, lastReal, tick_ = false, nil, nil, nil, nil, nil, nil, nil, nil, 0
+
+	local function setRealHidden(hidden)
+		local c = LP.Character
+		if not c then return end
+		for _, d in ipairs(c:GetDescendants()) do
+			if d:IsA("BasePart") or d:IsA("Decal") then d.LocalTransparencyModifier = hidden and 1 or 0 end
+		end
+	end
+
+	local function play(name)
+		if playing == name or not anims then return end
+		for key, t in pairs(anims) do
+			if key == name then t:Play(0.15) else t:Stop(0.15) end
+		end
+		playing = name
+	end
+
+	local function loadAnims()
+		anims, playing = {}, nil
+		local animator = cloneHum:FindFirstChildOfClass("Animator") or Instance.new("Animator", cloneHum)
+		local mod = safeRequire(RS.Client:FindFirstChild("Animations") or Shared:FindFirstChild("Animations"))
+		local ok, sets = pcall(function() return mod:GetAnims() end)
+		local prof = profile()
+		local cls = prof and prof:FindFirstChild("Class") and prof.Class.Value
+		local own = ok and type(sets) == "table" and sets[cls]
+		if type(own) ~= "table" then return end
+		for _, name in ipairs({ "Idle", "Run", "Fall" }) do
+			local src = own[name]
+			local anim = typeof(src) == "Instance" and (src:IsA("Animation") and src or (src:IsA("AnimationTrack") and src.Animation)) or (type(src) == "table" and src.Animation)
+			if typeof(anim) == "Instance" then
+				local ok2, track = pcall(function() return animator:LoadAnimation(anim) end)
+				if ok2 then
+					track.Looped = true
+					anims[name] = track
+				end
+			end
+		end
+	end
+
+	local function stop()
+		active = false
+		if conn then conn:Disconnect() conn = nil end
+		if controls then pcall(function() controls:Enable() end) end
+		setRealHidden(false)
+		local hum = humanoid()
+		local cam = workspace.CurrentCamera
+		if cam and hum then cam.CameraSubject = hum end
+		if clone then clone:Destroy() end
+		clone, cloneHum, cloneRoot, anims, playing, lastReal = nil, nil, nil, nil, nil, nil
+	end
+
+	local function start()
+		local char, real = LP.Character, root()
+		if not char or not real then return end
+		local flipped = {}
+		if not char.Archivable then char.Archivable = true flipped[#flipped + 1] = char end
+		for _, d in ipairs(char:GetDescendants()) do
+			if not d.Archivable then d.Archivable = true flipped[#flipped + 1] = d end
+		end
+		local ok, copy = pcall(function() return char:Clone() end)
+		for _, d in ipairs(flipped) do d.Archivable = false end
+		if not ok or not copy then return end
+		for _, d in ipairs(copy:GetDescendants()) do
+			if d:IsA("LuaSourceContainer") then
+				d:Destroy()
+			elseif d:IsA("BasePart") then
+				d.Anchored = false
+				d.CanQuery, d.CanTouch = false, false -- never interferes with the hub's ground checks
+			end
+		end
+		cloneHum = copy:FindFirstChildOfClass("Humanoid")
+		cloneRoot = copy:FindFirstChild("HumanoidRootPart")
+		if not cloneHum or not cloneRoot then copy:Destroy() return end
+		cloneHum.PlatformStand, cloneHum.Sit = false, false
+		copy.Name = "WZ_StayPut"
+		clone = copy
+		-- starts on the floor below the real character, which may be flying
+		local gy = groundY(real.Position, nil, 1)
+		local startAt = gy and Vector3.new(real.Position.X, gy + 5, real.Position.Z) or real.Position
+		copy:PivotTo(CFrame.new(startAt))
+		copy.Parent = workspace
+		loadAnims()
+		local okC, c = pcall(function() return require(LP.PlayerScripts.PlayerModule):GetControls() end)
+		controls = okC and c or nil
+		if controls then pcall(function() controls:Disable() end) end
+		lastReal = real.Position
+		active, tick_ = true, 0
+		conn = RunService.RenderStepped:Connect(function()
+			if not clone or not clone.Parent then return end
+			local cam = workspace.CurrentCamera
+			if cam and cam.CameraType == Enum.CameraType.Custom and cam.CameraSubject ~= cloneHum then cam.CameraSubject = cloneHum end
+			local dir = Vector3.zero
+			if cam and not UIS:GetFocusedTextBox() then
+				local look = cam.CFrame.LookVector * Vector3.new(1, 0, 1)
+				look = look.Magnitude > 0.01 and look.Unit or Vector3.new(0, 0, -1)
+				local right = Vector3.new(-look.Z, 0, look.X)
+				if UIS:IsKeyDown(Enum.KeyCode.W) then dir += look end
+				if UIS:IsKeyDown(Enum.KeyCode.S) then dir -= look end
+				if UIS:IsKeyDown(Enum.KeyCode.D) then dir += right end
+				if UIS:IsKeyDown(Enum.KeyCode.A) then dir -= right end
+				if UIS:IsKeyDown(Enum.KeyCode.Space) then cloneHum.Jump = true end
+			end
+			-- the copy inherits whatever speed the real character had when it was made, which can be 0 mid-attack
+			if cloneHum.WalkSpeed < 16 then cloneHum.WalkSpeed = 24 end
+			cloneHum:Move(dir.Magnitude > 0 and dir.Unit or Vector3.zero, false)
+			-- the humanoid doesn't turn this local copy by itself, so face the walking direction here
+			if dir.Magnitude > 0 then
+				cloneHum.AutoRotate = false
+				local p = cloneRoot.Position
+				cloneRoot.CFrame = cloneRoot.CFrame:Lerp(CFrame.lookAt(p, p + dir.Unit), 0.35)
+			end
+			local airborne = cloneHum.FloorMaterial == Enum.Material.Air
+			play(airborne and "Fall" or (dir.Magnitude > 0 and "Run" or "Idle"))
+			tick_ += 1
+			if tick_ % 20 == 0 then setRealHidden(true) end
+			local r = root()
+			if r then
+				-- the real character teleported (new floor, new area) or the copy fell out of the map: bring it along
+				local jumped = lastReal and (r.Position - lastReal).Magnitude > 150
+				if jumped or cloneRoot.Position.Y < r.Position.Y - 300 then
+					local g = groundY(r.Position, nil, 1)
+					clone:PivotTo(CFrame.new(g and Vector3.new(r.Position.X, g + 5, r.Position.Z) or r.Position))
+					cloneRoot.AssemblyLinearVelocity = Vector3.zero
+				end
+				lastReal = r.Position
+			end
+		end)
+		setRealHidden(true)
+	end
+
+	safeSec:AddToggle("StayPut", { Text = "Stay put (walk a copy of yourself)", Default = false })
+	onUnload(function() if active then stop() end end)
+	task.spawn(function()
+		while not Lumen.Unloaded do
+			local wanted = F.StayPut == true
+			-- the copy died or was deleted (fell out of the map, respawn...): clear it so it is rebuilt below
+			if active and (not clone or not clone.Parent or not cloneHum or cloneHum.Health <= 0 or not cloneRoot or not cloneRoot.Parent) then pcall(stop) end
+			if wanted and not active then pcall(start)
+			elseif not wanted and active then pcall(stop) end
+			task.wait(0.5)
+		end
+	end)
+end
+
+local settingsTab = Window:AddSettingsTab()
+
+do
+	local autoSec = settingsTab.Configs:AddSection("Auto Execute", "Right", { Open = true })
+	autoSec:AddToggle("AutoReexec", { Text = "Reload hub after teleports", Default = true })
+	autoSec:AddLabel("Needs WorldZeroHub.lua or internet access: after a teleport the hub reloads the latest version online.")
+end
+
+-- Disable 3D rendering: the world stops being drawn, and a black screen shows the session stats
+do
+	local blackout = Instance.new("Frame")
+	blackout.Size = UDim2.fromScale(1, 1)
+	blackout.BackgroundColor3 = Color3.new(0, 0, 0)
+	blackout.BorderSizePixel = 0
+	blackout.Visible = false
+	blackout.ZIndex = 0
+	-- its own layer in PlayerGui: above the game's UI but under the Divergence menu (hudGui can sit
+	-- in CoreGui, which draws over everything and would hide the menu)
+	local blackoutGui = Instance.new("ScreenGui")
+	blackoutGui.Name = "WZ_Blackout"
+	blackoutGui.ResetOnSpawn = false
+	blackoutGui.IgnoreGuiInset = true
+	blackoutGui.DisplayOrder = 9998
+	blackoutGui:SetAttribute("WZHub", true)
+	blackoutGui.Parent = LP:WaitForChild("PlayerGui")
+	onUnload(function() blackoutGui:Destroy() end)
+	blackout.Parent = blackoutGui
+	local column = Instance.new("Frame")
+	column.AnchorPoint = Vector2.new(0.5, 0.5)
+	column.Position = UDim2.fromScale(0.5, 0.5)
+	column.Size = UDim2.fromOffset(440, 0)
+	column.AutomaticSize = Enum.AutomaticSize.Y
+	column.BackgroundTransparency = 1
+	column.Parent = blackout
+	local columnList = Instance.new("UIListLayout", column)
+	columnList.SortOrder = Enum.SortOrder.LayoutOrder
+	columnList.Padding = UDim.new(0, 5)
+	local order = 0
+	local function line(height)
+		order += 1
+		local row = Instance.new("Frame")
+		row.BackgroundTransparency = 1
+		row.BorderSizePixel = 0
+		row.Size = UDim2.new(1, 0, 0, height)
+		row.LayoutOrder = order
+		row.Parent = column
+		return row
+	end
+	local function label(parent, font, size, align)
+		local t = Instance.new("TextLabel")
+		t.BackgroundTransparency = 1
+		t.Size = UDim2.fromScale(1, 1)
+		t.FontFace = font
+		t.TextSize = size
+		t.TextXAlignment = align
+		t.TextTruncate = Enum.TextTruncate.AtEnd
+		t.Parent = parent
+		return t
+	end
+	local center = Enum.TextXAlignment.Center
+	local title = label(line(40), Lumen.BoldFont or Lumen.Font, 32, center)
+	title.Text = "DIVERGENCE"
+	local subtitle = label(line(20), Lumen.Mono or Lumen.Font, 13, center)
+	subtitle.Text = "3D rendering is off"
+	local statusText = label(line(26), Lumen.Mono or Lumen.Font, 13, center)
+	local rows = {}
+	for _, def in ipairs({
+		{ "Session", "time" }, { "Gold earned", "gold" }, { "Per hour", "hour" }, { "Net", "net" }, { "This run", "run" },
+		{ "Runs", "runs" }, { "Levels", "levels" }, { "Halloween coins", "coins" }, { "Chest loot", "lootCount" },
+	}) do
+		local row = line(26)
+		local left = label(row, Lumen.Font, 18, Enum.TextXAlignment.Left)
+		left.Text = def[1]
+		rows[#rows + 1] = { left = left, value = label(row, Lumen.Mono or Lumen.Font, 18, Enum.TextXAlignment.Right), key = def[2] }
+	end
+	local lootLines = {}
+	for i = 1, 3 do
+		local row = line(22)
+		row.Visible = false
+		lootLines[i] = { row = row, label = label(row, Lumen.Font, 16, center) }
+	end
+	local viewLoot = Instance.new("TextButton")
+	order += 1
+	viewLoot.LayoutOrder = order
+	viewLoot.Size = UDim2.new(1, 0, 0, 34)
+	viewLoot.BorderSizePixel = 0
+	viewLoot.FontFace = Lumen.Font
+	viewLoot.TextSize = 15
+	viewLoot.Text = "View all loot"
+	viewLoot.Parent = column
+	Instance.new("UICorner", viewLoot).CornerRadius = UDim.new(0, 6)
+	viewLoot.MouseButton1Click:Connect(function()
+		lootPanel.Visible = not lootPanel.Visible
+		if lootPanel.Visible then lootRefreshPanel() end
+	end)
+
+	local enable3D = Instance.new("TextButton")
+	order += 1
+	enable3D.LayoutOrder = order
+	enable3D.Size = UDim2.new(1, 0, 0, 34)
+	enable3D.BorderSizePixel = 0
+	enable3D.FontFace = Lumen.BoldFont or Lumen.Font
+	enable3D.TextSize = 15
+	enable3D.Text = "Enable 3D rendering"
+	enable3D.Parent = column
+	Instance.new("UICorner", enable3D).CornerRadius = UDim.new(0, 6)
+	enable3D.MouseButton1Click:Connect(function()
+		pcall(function() Lumen.Options.Disable3D:Set(false) end)
+	end)
+
+	local applied = nil
+	local function setRender(off)
+		applied = off
+		pcall(function() RunService:Set3dRenderingEnabled(not off) end)
+		blackout.Visible = off
+	end
+	onUnload(function() pcall(function() RunService:Set3dRenderingEnabled(true) end) end)
+
+	local perfSec = settingsTab:AddSubTab("Performance"):AddSection("Rendering", "Left", { Open = true })
+	perfSec:AddToggle("Disable3D", { Text = "Disable 3D rendering", Default = false })
+	perfSec:AddLabel("Stops drawing the world to save CPU and GPU. A black screen shows your session stats instead. The hub keeps playing.")
+
+	task.spawn(function()
+		while not Lumen.Unloaded do
+			local wanted = F.Disable3D == true
+			if wanted ~= applied then setRender(wanted) end
+			if wanted then
+				local th = Lumen.Theme
+				title.TextColor3 = th.Accent
+				subtitle.TextColor3 = th.InactiveText
+				statusText.TextColor3 = th.Gradient
+				statusText.Text = tostring(status.text)
+				viewLoot.BackgroundColor3, viewLoot.TextColor3 = th.Element, th.Text
+				enable3D.BackgroundColor3, enable3D.TextColor3 = th.Accent, th.Background
+				for _, r in ipairs(rows) do
+					r.left.TextColor3 = th.InactiveText
+					r.value.Text = hudV[r.key].Text
+					r.value.TextColor3 = hudV[r.key].TextColor3
+				end
+				for i, l in ipairs(lootLines) do
+					l.row.Visible = hudLoot[i].row.Visible
+					l.label.Text = hudLoot[i].label.Text
+					l.label.TextColor3 = hudLoot[i].label.TextColor3
+				end
+			end
+			task.wait(0.5)
+		end
+	end)
+end
 
 Lumen:OnUnload(function()
 	for _, fn in ipairs(cleanup) do pcall(fn) end
