@@ -2610,8 +2610,8 @@ local function invoke(name, ...)
 	local r = remote(name)
 	if not r then return false end
 	local args = table.pack(...)
-	local ok, res = pcall(function() return r:InvokeServer(table.unpack(args, 1, args.n)) end)
-	return ok, res
+	-- every return value is passed on (e.g. Chests_CheckCondition answers false, "reason")
+	return pcall(function() return r:InvokeServer(table.unpack(args, 1, args.n)) end)
 end
 
 local function notify(title, text, dur)
@@ -3297,13 +3297,199 @@ local tower = { chests = {}, touchedFloor = nil, touchStart = nil, chestWait = 0
 if inInfiniteTower then
 	local r = remote("Chests_SpawnChest")
 	if r then
-		local c = r.OnClientEvent:Connect(function(_, cf, id)
+		-- Chests_SpawnChest(modelName, cframe, id, hasCondition, special); a boss drops three
+		-- (RaidChestGold, RaidChestSilver, RaidChestBlue)
+		local c = r.OnClientEvent:Connect(function(name, cf, id)
 			if typeof(cf) == "CFrame" and type(id) == "string" then
-				table.insert(tower.chests, { id = id, pos = cf.Position, at = os.clock() })
+				table.insert(tower.chests, { id = id, name = tostring(name), pos = cf.Position, at = os.clock() })
 			end
 		end)
 		onUnload(function() c:Disconnect() end)
 	end
+end
+
+-- "Chests per boss": opened chests are counted per floor from the server's confirmation
+-- (Chests_ChestOpened(player, id)), so chests the game opens by itself count too.
+local function towerFloorNow()
+	local f = RS:FindFirstChild("ReplicateTowerFloor")
+	return f and f.Value
+end
+local function towerChestCount()
+	local fl = towerFloorNow()
+	if tower.openedFloor ~= fl then tower.openedFloor, tower.openedCount, tower.counted = fl, 0, {} end
+	return tower.openedCount
+end
+local function towerChestLimitReached()
+	return towerChestCount() >= (F.TowerChestCount or 3)
+end
+local function towerCountChest(id)
+	towerChestCount() -- resets the counter on a new floor
+	if not tower.counted[id] then
+		tower.counted[id] = true
+		tower.openedCount += 1
+	end
+end
+
+if inInfiniteTower then
+	local r = remote("Chests_ChestOpened")
+	if r then
+		local c = r.OnClientEvent:Connect(function(plr, id)
+			if plr == LP and type(id) == "string" then towerCountChest(id) end
+		end)
+		onUnload(function() c:Disconnect() end)
+	end
+	-- The game opens any chest you stand within 10 studs of by itself (Shared.Chests Heartbeat ->
+	-- Chests:OpenChest). Once the limit is reached that call is skipped, otherwise a chest next to
+	-- the last one opened would still be taken. The original is kept across hub reloads.
+	local ChestsMod = safeRequire(Shared:FindFirstChild("Chests"))
+	if type(ChestsMod) == "table" and type(ChestsMod.OpenChest) == "function" then
+		local orig = rawget(ChestsMod, "__wzOrigOpenChest") or ChestsMod.OpenChest
+		ChestsMod.__wzOrigOpenChest = orig
+		ChestsMod.OpenChest = function(self, plr, id, ...)
+			if not Lumen.Unloaded and F.TowerChests and plr == LP and towerChestLimitReached() then return end
+			return orig(self, plr, id, ...)
+		end
+		onUnload(function() ChestsMod.OpenChest = orig end)
+	end
+end
+
+-- tower reset across the teleport: a small file marks "start the tower again when we land"
+local TOWER_RESET_FILE = "WZ_tower_reset.txt"
+-- the reset goes back to the world you were last in (where the tower was started), World 1 otherwise
+local LAST_WORLD_FILE = "WZ_last_world.txt"
+if inLobby then pcall(writefile, LAST_WORLD_FILE, tostring(game.PlaceId)) end
+local function resetWorldPlace()
+	local ok, p = pcall(readfile, LAST_WORLD_FILE)
+	return (ok and tonumber(p)) or 4310463616
+end
+local leavingTower = false
+do
+	local c = LP.OnTeleport:Connect(function(st) if st == Enum.TeleportState.Started then leavingTower = true end end)
+	onUnload(function() c:Disconnect() end)
+end
+local function towerResetLeave()
+	pcall(writefile, TOWER_RESET_FILE, tostring(os.time()))
+	notify("Infinite Tower", "Reset: leaving the tower, a new run starts from your world")
+	-- the game's own way out first; if we are still here after 6 s, teleport to that world directly
+	fire("Missions_LeaveChoice", false)
+	fire("Missions_NotifyReadyToLeave", true)
+	task.delay(6, function()
+		if leavingTower or Lumen.Unloaded then return end
+		pcall(function() game:GetService("TeleportService"):Teleport(resetWorldPlace(), LP) end)
+	end)
+end
+-- Reset the way a player does it: reset the character (towers have 1 life, so the run ends) and
+-- press Restart on the end screen = the "play again" leave choice (true) + ready to leave, the
+-- same call as a dungeon replay. Leaving for the world stays as the fallback after 40 s.
+-- The game's own "Reset" button in its settings menu: found by its caption and clicked through
+-- its connected handlers (exactly what a mouse click runs). A confirm prompt that pops up after it
+-- ("Yes" / "Confirm" / "Reset") is clicked the same way. Returns how many buttons were clicked.
+local SKIP_RESET_WORDS = { "battle", "pass", "quest", "track", "stat", "perk", "skill", "setting" }
+local function buttonCaption(b)
+	local t = (b:IsA("TextButton") and b.Text) or ""
+	if t == "" then
+		local l = b:FindFirstChildWhichIsA("TextLabel", true)
+		t = l and l.Text or ""
+	end
+	return (t:gsub("<[^>]+>", "")):lower()
+end
+local function clickButton(b)
+	local n = 0
+	for _, sig in ipairs({ "Activated", "MouseButton1Click", "MouseButton1Down", "MouseButton1Up" }) do
+		local ok, conns = pcall(getconnections, b[sig])
+		if ok and conns then
+			for _, c in ipairs(conns) do
+				if pcall(function() c:Fire() end) then n += 1 end
+			end
+		end
+	end
+	return n
+end
+local function findButtons(match)
+	local found = {}
+	local pg = LP:FindFirstChild("PlayerGui")
+	for _, b in ipairs(pg and pg:GetDescendants() or {}) do
+		if b:IsA("GuiButton") then
+			local cap = buttonCaption(b)
+			if match(cap) then table.insert(found, { button = b, caption = cap }) end
+		end
+	end
+	return found
+end
+local function pressSettingsReset()
+	if not getconnections then return 0 end
+	local clicked = 0
+	for _, f in ipairs(findButtons(function(cap)
+		if not cap:find("^%s*reset") then return false end
+		for _, w in ipairs(SKIP_RESET_WORDS) do if cap:find(w, 1, true) then return false end end
+		return true
+	end)) do
+		if clickButton(f.button) > 0 then clicked += 1 end
+	end
+	if clicked > 0 then
+		task.wait(1)
+		for _, f in ipairs(findButtons(function(cap)
+			return cap:find("^%s*yes") or cap:find("^%s*confirm") or cap:find("^%s*reset") or cap == "ok"
+		end)) do
+			if f.button.Visible then clickButton(f.button) end
+		end
+	end
+	return clicked
+end
+
+local function towerResetRestart()
+	notify("Infinite Tower", "Reset: resetting the character, then Restart")
+	tower.resetting = true -- towerStep holds still, so hover / safe-spot code can't pull us back
+	task.spawn(function()
+		-- World Zero keeps health on the server (Shared.Health), so Humanoid.Health = 0 on the client
+		-- does nothing (tested: the character kept fighting). What does kill: falling below the map's
+		-- FallenPartsDestroyHeight, the same as dropping off the map.
+		local function wzAlive()
+			local ch = LP.Character
+			if not ch or not ch.Parent then return false end
+			if Health then
+				local ok, hp = pcall(Health.GetHealth, Health, ch)
+				if ok and type(hp) == "number" then return hp > 0 end
+			end
+			local hum = humanoid()
+			return hum ~= nil and hum.Health > 0
+		end
+		-- 1) the Reset button in the game's settings
+		local clicked = pressSettingsReset()
+		if clicked == 0 then notify("Infinite Tower", "No Reset button found in the settings, using the fallback") end
+		local w0 = os.clock()
+		while wzAlive() and os.clock() - w0 < 4 do task.wait(0.25) end
+		-- 2) fallbacks: client-side health, then a drop below the map
+		local hum = humanoid()
+		if wzAlive() and hum then pcall(function() hum.Health = 0 end) task.wait(1.5) end
+		local hrp = root()
+		if wzAlive() and hrp then
+			towerHalt()
+			local y = workspace.FallenPartsDestroyHeight - 100
+			pcall(function()
+				hrp.CFrame = CFrame.new(hrp.Position.X, y, hrp.Position.Z)
+				hrp.AssemblyLinearVelocity = Vector3.new(0, -200, 0)
+			end)
+		end
+		local t0 = os.clock()
+		while os.clock() - t0 < 40 and not leavingTower and not Lumen.Unloaded do
+			task.wait(3)
+			fire("Missions_LeaveChoice", true) -- Restart
+			task.wait(0.5)
+			fire("Missions_NotifyReadyToLeave")
+		end
+		if not leavingTower and not Lumen.Unloaded then
+			notify("Infinite Tower", "Restart didn't go through, leaving the tower instead")
+			towerResetLeave()
+		end
+		task.delay(20, function() tower.resetting = false end)
+	end)
+end
+
+local function towerResetPending()
+	local ok, t = pcall(readfile, TOWER_RESET_FILE)
+	t = ok and tonumber(t)
+	return t and os.time() - t < 300 -- a reset older than 5 minutes is stale
 end
 
 local function towerFloors()
@@ -3352,52 +3538,70 @@ end
 local function towerStep(hrp)
 	local floor, start = towerFloors()
 	if not floor or not start then return false end
+	if tower.resetting then status.text = "resetting" return true end
 
-	-- reset at the chosen wave: start the tower again from inside it. If the server ignores that,
-	-- keep playing and try again every 20 s. A wave at or below the run's start floor never resets,
-	-- otherwise every new run would end right away.
+	-- Reset at the chosen wave. The server ignores Teleport_StartRaid from inside the tower (that is
+	-- what kept showing "Reset did not go through"), so the run is ended by resetting the character
+	-- and restarted with the end screen's Restart (towerResetRestart; leaving is only the fallback).
+	-- A wave at or below the run's start floor never resets, otherwise every new run would end at once.
 	local resetAt = F.TowerResetFloor or 200
 	if F.TowerReset and infiniteTower and resetAt > start and floor >= resetAt and (#tower.chests == 0 or not F.TowerChests) then
 		local since = os.clock() - (tower.resetTried or -1e9)
-		if since > 20 then
-			if tower.resetTried then notify("Infinite Tower", "Reset did not go through, trying again") end
+		if since > 60 then
 			tower.resetTried = os.clock()
 			towerHalt()
 			status.text = "resetting at wave " .. resetAt
-			fire("Teleport_PrewarmMission", infiniteTower.ID)
-			task.wait(1)
-			fire("Teleport_StartRaid", infiniteTower.ID, 1, nil) -- towers always run on difficulty 1
-			return true
-		elseif since < 5 then
+			towerResetRestart()
+		else
 			status.text = "resetting at wave " .. resetAt
-			return true
 		end
+		return true
 	end
 	local now = os.clock()
 
 	if F.TowerChests and #tower.chests > 0 then
-		local ch = tower.chests[1]
-		if now - ch.at > 20 then
-			table.remove(tower.chests, 1)
+		-- Every chest is handled on its own: a "no" from the server only skips that chest. (It used
+		-- to clear the whole list, so after the first chest the other two were left behind.)
+		-- Chests live 30 + 3 s on the server (Shared.Chests: n1 = 30 in towers), nearest goes first.
+		for i = #tower.chests, 1, -1 do
+			local c = tower.chests[i]
+			if now - c.at > 32 or c.done then table.remove(tower.chests, i) end
+		end
+		if #tower.chests == 0 then return true end
+		-- "Chests per boss" slider: stop once that many were opened on this floor; chests the
+		-- server already confirmed (by us or the game's own auto-open) are dropped from the list
+		if towerChestLimitReached() then
+			tower.chests = {}
 			return true
 		end
+		for i = #tower.chests, 1, -1 do
+			if tower.counted[tower.chests[i].id] then table.remove(tower.chests, i) end
+		end
+		if #tower.chests == 0 then return true end
+		table.sort(tower.chests, function(a, b) return (a.pos - hrp.Position).Magnitude < (b.pos - hrp.Position).Magnitude end)
+		local ch = tower.chests[1]
 		local flat = ((ch.pos - hrp.Position) * Vector3.new(1, 0, 1)).Magnitude
-		if flat > 8 then
-			status.text = string.format("boss chest · %d studs", flat)
+		local label = ch.name:gsub("^RaidChest", ""):lower() .. " chest"
+		if flat > 6 then
+			status.text = string.format("%s · %d studs", label, flat)
 			navTo(ch.pos, nil, true)
 			return true
 		end
 		towerHalt()
-		status.text = "opening boss chest"
-		if now < tower.chestWait then return true end
-		tower.chestWait = now + 1
-		table.remove(tower.chests, 1)
-		-- the server allows one chest, more with the Extra Drop pass; a "no" means we are done
-		local ok, can = invoke("Chests_CheckCondition", ch.id)
-		if ok and can ~= false then
+		status.text = "opening " .. label
+		-- a fresh chest only accepts the open 3 s after it appeared (client registers it then)
+		if now - ch.at < 3 or now < tower.chestWait then return true end
+		tower.chestWait = now + 0.6
+		ch.tries = (ch.tries or 0) + 1
+		local ok, can, why = invoke("Chests_CheckCondition", ch.id)
+		if ok and can ~= false and can ~= nil then
 			fire("Chests_OpenChest", ch.id)
-		else
-			tower.chests = {}
+			ch.done = true
+			towerCountChest(ch.id) -- count right away so the next chest can't slip past the limit
+		elseif ch.tries >= 3 then
+			-- the server says no for this one (reason shown once); move on to the next chest
+			ch.done = true
+			notify("Boss chest", label .. ": " .. tostring(why or "not available for you"), 5)
 		end
 		return true
 	elseif not F.TowerChests then
@@ -4046,6 +4250,7 @@ task.spawn(function()
 				-- orbs come first, before dodging and every other target: the trip takes about a second
 				if (F.AutoFarm or running or towerRun) and orbStep(hrp) then return end
 				if (F.AutoFarm or running or towerRun) and curse.toWell(hrp) then return end
+				if towerRun and tower.resetting then status.text = "resetting" return end -- no dodging / hover while resetting
 				if dodgeStep(hrp) then return end
 				if not (F.AutoFarm or running or towerRun) then return end
 				if curse.kill(hrp) then return end
@@ -4735,7 +4940,9 @@ lootSec:AddSlider("CoinDelay", { Text = "Pickup interval", Min = 0.1, Max = 2, D
 local runSec = TabDungeon:AddSection("Auto Run Dungeon", { Open = true })
 runSec:AddToggle("AutoRun", { Text = "Auto Run Dungeon", Default = false, Callback = function(on) if not on then stopMoving() end end })
 	:AddKeybind("AutoRunKey", { Default = Enum.KeyCode.F7 })
-runSec:AddDropdown("TravelMode", { Text = "Travel (long distances)", Values = { "Walk", "Tween" }, Default = "Walk" })
+-- Tween by default: walking to the next stage / far mobs was slow. Stage triggers are still reached
+-- on the ground (route.ground), so tweening never flies over a trigger without touching it.
+runSec:AddDropdown("TravelMode", { Text = "Travel (long distances)", Values = { "Tween", "Walk" }, Default = "Tween" })
 runSec:AddSlider("StuckTime", { Text = "Skip target if stuck for", Min = 4, Max = 20, Default = 10, Decimals = 0, Suffix = " s" })
 local runLabel = runSec:AddLabel("Status: -")
 runSec:AddLabel("Works without Auto Farm: kills every mob in the dungeon, walks into the next checkpoint / trigger when the area is clear, paths around walls. Uses the Farm tab's skills, Orbit and height settings.")
@@ -4749,6 +4956,7 @@ end)
 local towerSec = TabDungeon:AddSection("Auto Run Infinite Tower", { Open = true })
 towerSec:AddToggle("AutoTower", { Text = "Auto Run Infinite Tower", Default = false, Callback = function(on) if not on then stopMoving() end end })
 towerSec:AddToggle("TowerChests", { Text = "Open boss chests", Default = true })
+towerSec:AddSlider("TowerChestCount", { Text = "Chests per boss", Min = 1, Max = 3, Default = 3, Decimals = 0 })
 towerSec:AddToggle("TowerReset", { Text = "Reset at wave", Default = false })
 towerSec:AddSlider("TowerResetFloor", { Text = "Reset wave", Min = 101, Max = 500, Default = 200, Decimals = 0 })
 towerSec:AddLabel("Starts a new run when you reach this wave. Pick one above the wave your run starts on (about your level), or it won't reset.")
@@ -4766,6 +4974,18 @@ end)
 
 local dunSec = TabDungeon:AddSection("Run", { Open = true })
 dunSec:AddToggle("SkipCutscenes", { Text = "Skip cutscenes", Default = true, Callback = function(on) if on then task.spawn(applySkipSetting) end end })
+-- the wheel's spin is drawn on this client for SPINNER_TIMER seconds. The server has its own copy of
+-- that timer, so this only shortens what's shown; the prize still arrives when the server gives it.
+do
+	local spinner = safeRequire(Shared:FindFirstChild("EventSpinner"))
+	local normalTime = type(spinner) == "table" and spinner.SPINNER_TIMER
+	local spinSec = TabLobby:AddSection("Spin Wheel", { Open = true })
+	spinSec:AddToggle("SkipSpinAnim", { Text = "Skip spin wheel animation", Default = false, Callback = function(on)
+		if normalTime then spinner.SPINNER_TIMER = on and 0.05 or normalTime end
+	end })
+	onUnload(function() if normalTime then spinner.SPINNER_TIMER = normalTime end end)
+end
+
 local fallenSec = TabEvent:AddSection("Fallen King & Queen", { Open = true })
 fallenSec:AddToggle("AutoFallen", { Text = "Auto run Fallen Throne", Default = false, Callback = function(on) if not on then stopMoving() end end })
 fallenSec:AddToggle("FallenRestart", { Text = "Start the next run automatically", Default = true })
@@ -4971,6 +5191,24 @@ if inLobby then
 				t0 = os.clock()
 			end
 			task.wait(2)
+		end
+	end)
+end
+
+-- second half of the tower reset: we left the tower at the reset wave, so start a new run from
+-- here (party leader; the party comes along like with a normal start). Up to 3 tries, 20 s apart.
+if inLobby and infiniteTower and towerResetPending() then
+	task.spawn(function()
+		task.wait(8) -- config, party and character load first
+		pcall(delfile, TOWER_RESET_FILE)
+		if not F.TowerReset then return end
+		for attempt = 1, 3 do
+			if Lumen.Unloaded or leavingTower then return end
+			notify("Infinite Tower", "Reset: starting a new tower run" .. (attempt > 1 and (" (try " .. attempt .. ")") or ""))
+			fire("Teleport_PrewarmMission", infiniteTower.ID)
+			task.wait(1)
+			fire("Teleport_StartRaid", infiniteTower.ID, 1, nil) -- towers always run on difficulty 1
+			task.wait(20)
 		end
 	end)
 end
@@ -5701,6 +5939,72 @@ end
 
 -- chest loot on the HUD: only the last 3 items, one short line each, so the HUD can't grow
 local RARITY_COLORS = { Color3.fromRGB(190, 190, 195), Color3.fromRGB(120, 220, 120), Color3.fromRGB(90, 160, 255), Color3.fromRGB(190, 110, 255), Color3.fromRGB(255, 170, 60) }
+local lootInfo = { perks = {} }
+do
+	local gear = Shared:FindFirstChild("Gear")
+	lootInfo.perks = gear and safeRequire(gear:FindFirstChild("GearPerks")) or {}
+end
+local LOOT_COSMETIC = { Accessory = true, Costume = true, Mount = true, Aura = true, WeaponSkin = true }
+local LOOT_COLOURS = {
+	{ "Black", 25, 25, 25 }, { "Grey", 130, 130, 130 }, { "White", 240, 240, 240 }, { "Red", 215, 45, 45 },
+	{ "Orange", 240, 140, 40 }, { "Yellow", 240, 220, 60 }, { "Green", 60, 190, 80 }, { "Cyan", 60, 210, 225 },
+	{ "Blue", 55, 95, 225 }, { "Purple", 140, 70, 215 }, { "Pink", 240, 110, 190 }, { "Brown", 120, 75, 40 },
+}
+
+-- what makes this copy of an item unique; kept as plain numbers and text so it saves with the session
+function lootInfo.read(item)
+	local d = {}
+	local lvl = item:FindFirstChild("Level")
+	if lvl and lvl:IsA("ValueBase") then d.lvl = lvl.Value end
+	local up = item:FindFirstChild("Upgrade")
+	if up and up:IsA("ValueBase") and up.Value ~= 0 then d.up = up.Value end
+	for i = 1, 3 do
+		local p = item:FindFirstChild("Perk" .. i)
+		if p and p:IsA("StringValue") and p.Value ~= "" then
+			local v = p:FindFirstChild("PerkValue")
+			d.perks = d.perks or {}
+			table.insert(d.perks, { p.Value, v and v.Value or 0 })
+		end
+	end
+	local dye = item:FindFirstChild("Dye")
+	if dye and dye:IsA("Color3Value") then d.dye = { dye.Value.R, dye.Value.G, dye.Value.B } end
+	local var = item:FindFirstChild("Variant")
+	if var and var:IsA("ValueBase") then d.var = var.Value end
+	return next(d) and d or nil
+end
+
+function lootInfo.colourName(c)
+	local best, bestD
+	for _, p in ipairs(LOOT_COLOURS) do
+		local dist = (c[1] * 255 - p[2]) ^ 2 + (c[2] * 255 - p[3]) ^ 2 + (c[3] * 255 - p[4]) ^ 2
+		if not bestD or dist < bestD then best, bestD = p[1], dist end
+	end
+	return best
+end
+
+function lootInfo.paint(cell, entry)
+	local d, lines = entry.d, {}
+	local info = ItemDB[entry.n]
+	if d and d.lvl then lines[#lines + 1] = "Lv " .. d.lvl .. (d.up and ("  +" .. d.up) or "") end
+	for _, p in ipairs(d and d.perks or {}) do
+		local def = lootInfo.perks[p[1]]
+		local name = type(def) == "table" and def.DisplayName or p[1]
+		lines[#lines + 1] = string.format("%s %+d%%", name, math.floor(p[2] * 100 + 0.5))
+	end
+	if d and d.var then lines[#lines + 1] = "Variant " .. d.var end
+	if d and d.dye then
+		lines[#lines + 1] = "Colour: " .. lootInfo.colourName(d.dye)
+	elseif type(info) == "table" and info.RandomDyeOnMissionPrize then
+		lines[#lines + 1] = "Colour: not recorded" -- always has a rolled colour; this copy's wasn't captured
+	elseif type(info) == "table" and LOOT_COSMETIC[info.Type] then
+		lines[#lines + 1] = "Colour: default"
+	end
+	cell.details.Text = table.concat(lines, "\n")
+	cell.details.TextColor3 = Lumen.Theme.InactiveText
+	cell.swatch.Visible = d ~= nil and d.dye ~= nil
+	if d and d.dye then cell.swatch.BackgroundColor3 = Color3.new(d.dye[1], d.dye[2], d.dye[3]) end
+end
+
 local lastLootAt = {}
 local function addLoot(item)
 	if not session or typeof(item) ~= "Instance" then return end
@@ -5714,7 +6018,16 @@ local function addLoot(item)
 	table.insert(session.loot, 1, item.Name)
 	session.loot[4] = nil
 	session.lootAll = session.lootAll or {}
-	table.insert(session.lootAll, { n = item.Name, id = id })
+	local lootEntry = { n = item.Name, id = id, d = lootInfo.read(item) }
+	table.insert(session.lootAll, lootEntry)
+	-- the item's details can arrive a moment after the item itself
+	task.delay(1, function()
+		local later = lootInfo.read(item)
+		if later then
+			lootEntry.d = later
+			saveSession()
+		end
+	end)
 	if #session.lootAll > 300 then table.remove(session.lootAll, 1) end
 	session.lootCount = (session.lootCount or 0) + 1
 	saveSession()
@@ -5787,7 +6100,7 @@ lootScroll.ScrollBarThickness = 4
 lootScroll.ZIndex = 6
 lootScroll.Parent = lootPanel
 local lootGrid = Instance.new("UIGridLayout", lootScroll)
-lootGrid.CellSize = UDim2.fromOffset(110, 138)
+lootGrid.CellSize = UDim2.fromOffset(150, 200)
 lootGrid.CellPadding = UDim2.fromOffset(8, 8)
 lootGrid.SortOrder = Enum.SortOrder.LayoutOrder
 
@@ -5815,12 +6128,15 @@ end
 local lootCells = {}
 local function lootOwnedIds()
 	local owned, ownedNames = {}, {}
+	local found = { id = {}, name = {} } -- the item itself, by ID, and by name when only one copy exists
 	local function collect(container)
 		for _, d in ipairs(container:GetDescendants()) do
 			if d.Name == "ID" and d:IsA("StringValue") then
 				owned[d.Value] = true
 				local itemName = d.Parent.Name
 				ownedNames[itemName] = (ownedNames[itemName] or 0) + 1
+				found.id[d.Value] = d.Parent
+				found.name[itemName] = ownedNames[itemName] == 1 and d.Parent or nil
 			end
 		end
 	end
@@ -5831,7 +6147,7 @@ local function lootOwnedIds()
 	local equips = RS:FindFirstChild("PlayerEquips")
 	local mine = equips and equips:FindFirstChild(LP.Name)
 	if mine then collect(mine) end
-	return owned, items ~= nil, ownedNames
+	return owned, items ~= nil, ownedNames, found
 end
 
 local function lootMakeCell(entry)
@@ -5866,8 +6182,21 @@ local function lootMakeCell(entry)
 		view.ZIndex = 8
 		view.Parent = cell
 	end
+	local details = text(136, 60, 11, Lumen.Font)
+	details.TextWrapped = false
+	details.TextTruncate = Enum.TextTruncate.AtEnd
+	details.TextYAlignment = Enum.TextYAlignment.Top
+	local swatch = Instance.new("Frame")
+	swatch.AnchorPoint = Vector2.new(1, 0)
+	swatch.Position = UDim2.new(1, -6, 0, 6)
+	swatch.Size = UDim2.fromOffset(12, 12)
+	swatch.BorderSizePixel = 0
+	swatch.Visible = false
+	swatch.ZIndex = 8
+	swatch.Parent = cell
+	Instance.new("UICorner", swatch).CornerRadius = UDim.new(1, 0)
 	cell.Parent = lootScroll
-	return { frame = cell, status = status }
+	return { frame = cell, status = status, details = details, swatch = swatch }
 end
 
 local function lootRefreshPanel()
@@ -5877,7 +6206,7 @@ local function lootRefreshPanel()
 	lootTitle.TextColor3 = th.Text
 	lootClose.TextColor3 = th.InactiveText
 	local all = session and session.lootAll or {}
-	local owned, known, ownedNames = lootOwnedIds()
+	local owned, known, ownedNames, found = lootOwnedIds()
 	local sold = 0
 	-- newest first, so when several copies of an item exist the newest ones count as kept
 	for i = #all, 1, -1 do
@@ -5889,6 +6218,12 @@ local function lootRefreshPanel()
 		end
 		c.frame.LayoutOrder = -i -- newest first
 		c.frame.BackgroundColor3 = th.Inline
+		-- loot recorded before details were saved, or whose details came late: read them from the inventory
+		if not entry.d then
+			local it = entry.id and found.id[entry.id] or (not entry.id and found.name[entry.n])
+			if it then entry.d = lootInfo.read(it) end
+		end
+		lootInfo.paint(c, entry)
 		-- end-of-run chest rewards arrive as a copy with no ID, so those are matched by item name
 		-- only gear can be sold; skins and the like unlock to the account and never sit in the inventory
 		local info = ItemDB[entry.n]
